@@ -63,7 +63,59 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
     int difCol = destCol - initCol;
     int difRow = destRow - initRow;
 
-      switch (Piece.tag)
+    // Common path checking function for sliding pieces
+    int isPathClear(int initCol, int initRow, int destCol, int destRow)
+    {
+        int stepCol;
+        if (difCol == 0)
+        {
+            stepCol = 0;
+        }
+        else
+        {
+            if (difCol > 0)
+            {
+                stepCol = 1;
+            }
+            else
+            {
+                stepCol = -1;
+            }
+        }
+
+        int stepRow;
+        if (difRow == 0)
+        {
+            stepRow = 0;
+        }
+        else
+        {
+            if (difRow > 0)
+            {
+                stepRow = 1;
+            }
+            else
+            {
+                stepRow = -1;
+            }
+        }
+
+        int currCol = initCol + stepCol;
+        int currRow = initRow + stepRow;
+
+        while (currCol != destCol || currRow != destRow)
+        { // pana ajunge la destinatie verifica fiecare pozitie
+            if (Board[currRow][currCol].piece != '_')
+            {
+                return 0; // este blocat
+            }
+            currCol += stepCol;
+            currRow += stepRow;
+        }
+        return 1; // este cale libera
+    }
+
+    switch (Piece.tag)
     {
     case PAWN:
         if (Piece.color == 1)
@@ -131,21 +183,21 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
     case ROOK:
         if (difRow == 0 || difCol == 0)
         {
-            // return isPathClear(initCol, initRow, destCol, destRow);
+            return isPathClear(initCol, initRow, destCol, destRow);
         }
         break;
 
     case BISHOP:
         if (abs(difRow) == abs(difCol))
         {
-            // return isPathClear(initCol, initRow, destCol, destRow);
+            return isPathClear(initCol, initRow, destCol, destRow);
         }
         break;
 
     case QUEEN:
         if (difRow == 0 || difCol == 0 || abs(difRow) == abs(difCol))
         {
-            // return isPathClear(initCol, initRow, destCol, destRow);
+            return isPathClear(initCol, initRow, destCol, destRow);
         }
         break;
 
@@ -247,22 +299,23 @@ void render_piece(SDL_Renderer *renderer, SDL_Texture *piece, int col, int row)
     SDL_RenderCopy(renderer, piece, NULL, &dstrect);
 }
 
-SDL_Rect boardToScreen(int x, int y)
-{
-    return (SDL_Rect){
-        100 + x * SQUARE_SIZE,
-        100 + y * SQUARE_SIZE,
-        SQUARE_SIZE,
-        SQUARE_SIZE};
-}
+// SDL_Rect boardToScreen(int x, int y)
+// {
+//     return (SDL_Rect){
+//         100 + x * SQUARE_SIZE,
+//         100 + y * SQUARE_SIZE,
+//         SQUARE_SIZE,
+//         SQUARE_SIZE};
+// }
 
-SDL_Point screenToBoard(int x_coord, int y_coord)
-{
-    return (SDL_Point){
-        (x_coord - 100) / SQUARE_SIZE,
-        (y_coord - 100) / SQUARE_SIZE};
-}
+// SDL_Point screenToBoard(int x_coord, int y_coord)
+// {
+//     return (SDL_Point){
+//         (x_coord - 100) / SQUARE_SIZE,
+//         (y_coord - 100) / SQUARE_SIZE};
+// }
 
+// Convert mouse input into chess table coordinates
 Coord_t handleMouseClick(SDL_MouseButtonEvent *click)
 {
     Coord_t coord;

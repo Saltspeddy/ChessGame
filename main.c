@@ -31,10 +31,18 @@ struct cheessBoard
 
 } Board[BOARD_SIZE][BOARD_SIZE];
 
+typedef struct coordinates
+{
+    int x;
+    int y;
+} Coord_t;
+
 int whosTurn = 0;
 
 int validateMove(int initCol, int initRow, int destCol, int destRow)
 {
+    printf("%c %d %d : %d %d %c\n\n", Board[initRow][initCol].piece, initRow, initCol, destRow, destCol, Board[destRow][destCol].piece);
+
     struct cheessBoard Piece = Board[initRow][initCol];
     if (Piece.piece == '_')
     {
@@ -47,67 +55,15 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
         return 0;
     }
 
-    if (whosTurn != Piece.color)
-    {
-        return 0;
-    }
+    // if (whosTurn != Piece.color)
+    // {
+    //     return 0;
+    // }
 
     int difCol = destCol - initCol;
     int difRow = destRow - initRow;
 
-    // Common path checking function for sliding pieces
-    int isPathClear(int initCol, int initRow, int destCol, int destRow)
-    {
-        int stepCol;
-        if (difCol == 0)
-        {
-            stepCol = 0;
-        }
-        else
-        {
-            if (difCol > 0)
-            {
-                stepCol = 1;
-            }
-            else
-            {
-                stepCol = -1;
-            }
-        }
-
-        int stepRow;
-        if (difRow == 0)
-        {
-            stepRow = 0;
-        }
-        else
-        {
-            if (difRow > 0)
-            {
-                stepRow = 1;
-            }
-            else
-            {
-                stepRow = -1;
-            }
-        }
-
-        int currCol = initCol + stepCol;
-        int currRow = initRow + stepRow;
-
-        while (currCol != destCol || currRow != destRow)
-        { // pana ajunge la destinatie verifica fiecare pozitie
-            if (Board[currRow][currCol].piece != '_')
-            {
-                return 0; // este blocat
-            }
-            currCol += stepCol;
-            currRow += stepRow;
-        }
-        return 1; // este cale libera
-    }
-
-    switch (Piece.tag)
+      switch (Piece.tag)
     {
     case PAWN:
         if (Piece.color == 1)
@@ -175,21 +131,21 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
     case ROOK:
         if (difRow == 0 || difCol == 0)
         {
-            return isPathClear(initCol, initRow, destCol, destRow);
+            // return isPathClear(initCol, initRow, destCol, destRow);
         }
         break;
 
     case BISHOP:
         if (abs(difRow) == abs(difCol))
         {
-            return isPathClear(initCol, initRow, destCol, destRow);
+            // return isPathClear(initCol, initRow, destCol, destRow);
         }
         break;
 
     case QUEEN:
         if (difRow == 0 || difCol == 0 || abs(difRow) == abs(difCol))
         {
-            return isPathClear(initCol, initRow, destCol, destRow);
+            // return isPathClear(initCol, initRow, destCol, destRow);
         }
         break;
 
@@ -215,27 +171,19 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
     return 0;
 }
 
-int makeMove(char *moveFrom, char *moveTo, FILE *fileText)
+int makeMove(Coord_t moveFrom, Coord_t moveTo) //, FILE *fileText
 {
-    if (strlen(moveFrom) < 2 || strlen(moveTo) < 2)
+
+    printf("%d %d : %d %d\n", moveFrom.x, moveFrom.y, moveTo.x, moveTo.y);
+
+    if (validateMove(moveFrom.y, moveFrom.x, moveTo.y, moveTo.x))
     {
-    }
-    int initCol = moveFrom[0] - 'a';
-    int initRow = 7 - (moveFrom[1] - '1');
-    int destCol = moveTo[0] - 'a';
-    int destRow = 7 - (moveTo[1] - '1');
-    if (validateMove(initCol, initRow, destCol, destRow))
-    {
-        fwrite(moveFrom, sizeof(char), strlen(moveFrom), fileText); // salvam toate mutarile validate pe parcurs
-        fwrite("\t", sizeof(char), 1, fileText);
-        fwrite(moveTo, sizeof(char), strlen(moveTo), fileText);
-        fwrite("\n", sizeof(char), 1, fileText);
-        printf("%c", Board[initRow][initCol].piece);
-        Board[destRow][destCol] = Board[initRow][initCol]; // afcem trecerea catre destiantie
-        Board[initRow][initCol].piece = '_';
-        Board[initRow][initCol].tag = EMPTY;
-        Board[initRow][initCol].value = 0;
-        Board[initRow][initCol].color = 0;
+        // printf("%c", Board[moveFrom.x][moveFrom.y].piece);
+        Board[moveTo.x][moveTo.y] = Board[moveFrom.x][moveFrom.y]; // afcem trecerea catre destiantie
+        Board[moveFrom.x][moveFrom.y].piece = '_';
+        Board[moveFrom.x][moveFrom.y].tag = EMPTY;
+        Board[moveFrom.x][moveFrom.y].value = 0;
+        Board[moveFrom.x][moveFrom.y].color = 0;
         whosTurn = !whosTurn;
     }
     else
@@ -315,11 +263,12 @@ SDL_Point screenToBoard(int x_coord, int y_coord)
         (y_coord - 100) / SQUARE_SIZE};
 }
 
-void handleMouseClick(SDL_MouseButtonEvent *click)
+Coord_t handleMouseClick(SDL_MouseButtonEvent *click)
 {
-    int board_x = (click->x - 100) / SQUARE_SIZE;
-    int board_y = (click->y - 100) / SQUARE_SIZE;
-    printf("%d %d : %d %d\n", board_x, board_y, click->x, click->y);
+    Coord_t coord;
+    coord.y = (click->x - 100) / SQUARE_SIZE;
+    coord.x = (click->y - 100) / SQUARE_SIZE;
+    return coord;
 }
 
 int main(int argc, char *argv[])
@@ -432,10 +381,14 @@ int main(int argc, char *argv[])
         }
     }
 
+    Coord_t From;
+    Coord_t To;
     // 4. Main loop
     int running = 1;
+    int move = 0;
     while (running)
     {
+
         SDL_Event event;
         while (SDL_PollEvent(&event))
         {
@@ -445,7 +398,22 @@ int main(int argc, char *argv[])
             }
             else if (event.type == SDL_MOUSEBUTTONDOWN)
             {
-                handleMouseClick(&event.button);
+                Coord_t Aux = handleMouseClick(&event.button);
+                if (move % 2 == 0)
+                {
+                    move++;
+                    From = Aux;
+                }
+                else
+                {
+                    move++;
+                    To = Aux;
+                    makeMove(From, To);
+                    printf("%d %d : %d %d\n", From.x, From.y, Aux.x, Aux.y);
+                }
+
+                // printf("%d", move);
+                whosTurn = move % 2;
             }
         }
 

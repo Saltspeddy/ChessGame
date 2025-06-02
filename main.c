@@ -1,15 +1,19 @@
 #ifdef _WIN32
-#include <windows.h>
 #include <SDL2/SDL.h>       // Correct if files are in include/SDL2/ // or #include "SDL.h" depending on setup
 #include <SDL2/SDL_image.h> // Required for PNG/JPG
 #include <SDL2/SDL_ttf.h>
 #include <stdio.h>
 #include <string.h>
 
-#define WINDOW_WIDTH 750
+#define WINDOW_WIDTH 850
 #define WINDOW_HEIGHT 600
 #define BOARD_SIZE 8
 #define SQUARE_SIZE (400 / BOARD_SIZE)
+#define MAX_MOVES 512
+
+char moves[MAX_MOVES][10]; // Array to store moves for pgn file
+int moveCount = 0;         // Number of moves for pgn file
+int running = 1;
 
 enum PieceType
 {
@@ -22,14 +26,16 @@ enum PieceType
     KING
 };
 
-struct cheessBoard
+typedef struct
 {
+    unsigned int tag : 3;
     unsigned int color : 1; // 0 is white, 1 is black
     unsigned int value : 4; // maxim valoarea 9 la regina, regele are valoare 0
-    unsigned int tag : 3;   // 6 piese se reprezinta pe 3 biti
+                            // 6 piese se reprezinta pe 3 biti
     char piece;
 
-} Board[BOARD_SIZE][BOARD_SIZE];
+} Piece;
+Piece Board[BOARD_SIZE][BOARD_SIZE];
 
 typedef struct coordinates
 {
@@ -37,20 +43,44 @@ typedef struct coordinates
     int y;
 } Coord_t;
 
+Coord_t handleMouseClick(SDL_MouseButtonEvent *click)
+{
+    Coord_t coord;
+    coord.y = (click->x - 80) / SQUARE_SIZE;
+    coord.x = (click->y - 80) / SQUARE_SIZE;
+    return coord;
+}
+
+char *pieceFiles[2][6] = {
+    {"assets/pawn.png",
+     "assets/knight.png",
+     "assets/bishop.png",
+     "assets/rook.png",
+     "assets/queen.png",
+     "assets/king.png"},
+    {"assets/pawn1.png",
+     "assets/knight1.png",
+     "assets/bishop1.png",
+     "assets/rook1.png",
+     "assets/queen1.png",
+     "assets/king1.png"}};
+
+SDL_Texture *pieceTextures[2][6];
+
 int whosTurn = 0;
 
 int validateMove(int initCol, int initRow, int destCol, int destRow)
 {
     printf("%c %d %d : %d %d %c\n\n", Board[initRow][initCol].piece, initRow, initCol, destRow, destCol, Board[destRow][destCol].piece);
 
-    struct cheessBoard Piece = Board[initRow][initCol];
-    if (Piece.piece == '_')
+    Piece Initial = Board[initRow][initCol];
+    if (Initial.tag == EMPTY)
     {
         return 0;
     }
 
-    struct cheessBoard Destination = Board[destRow][destCol];
-    if (Destination.piece != '_' && Destination.color == Piece.color)
+    Piece Destination = Board[destRow][destCol];
+    if (Destination.tag != EMPTY && Destination.color == Initial.color)
     {
         return 0;
     }
@@ -100,7 +130,7 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
 
         while (currCol != destCol || currRow != destRow)
         { // pana ajunge la destinatie verifica fiecare pozitie
-            if (Board[currRow][currCol].piece != '_')
+            if (Board[currRow][currCol].tag != EMPTY)
             {
                 return 0; // este blocat
             }
@@ -110,71 +140,54 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
         return 1; // este cale libera
     }
 
-    switch (Piece.tag)
+    switch (Initial.tag)
     {
     case PAWN:
-        if (Piece.color == 1)
+        if (Initial.color == 1)
         { // Black Pawn
-            if (initRow == 6 && difRow == 1 && difCol == 0 && Destination.tag == EMPTY)
-            {
-                // promotePawn(initCol, initRow);
-                return 1;
-            }
-            if (initRow == 6 && difRow == 1 && abs(difCol) == 1 && Destination.tag != EMPTY)
-            {
-                // promotePawn(initCol, initRow);
-                return 1;
-            }
+            // Single move forward
             if (difRow == 1 && difCol == 0 && Destination.tag == EMPTY)
             {
                 return 1;
             }
-            if (difRow == 2 && difCol == 0 && initRow == 1 && Destination.tag == EMPTY)
+            // Double move forward from starting position
+            if (initRow == 1 && difRow == 2 && difCol == 0 && Destination.tag == EMPTY)
             {
-                // Check square in between for 2-square move
-                if (Board[initRow + 1][initCol].piece != '_')
+                // Check the square in between
+                if (Board[initRow + 1][initCol].tag == EMPTY)
                 {
-                    return 0;
+                    return 1;
                 }
-                return 1;
             }
-            if (difRow == 1 && abs(difCol) == 1 && Destination.tag != EMPTY)
+            // Diagonal capture
+            if (difRow == 1 && abs(difCol) == 1 && Destination.tag != EMPTY && Destination.color != Initial.color)
             {
                 return 1;
             }
         }
         else
         { // White Pawn
-            if (initRow == 1 && difRow == -1 && difCol == 0 && Destination.tag == EMPTY)
-            {
-                // promotePawn(initCol, initRow);
-                return 1;
-            }
-            if (initRow == 1 && difRow == -1 && abs(difCol) == 1 && Destination.tag != EMPTY)
-            {
-                // promotePawn(initCol, initRow);
-                return 1;
-            }
+            // Single move forward
             if (difRow == -1 && difCol == 0 && Destination.tag == EMPTY)
             {
                 return 1;
             }
-            if (difRow == -2 && difCol == 0 && initRow == 6 && Destination.tag == EMPTY)
+            // Double move forward from starting position
+            if (initRow == 6 && difRow == -2 && difCol == 0 && Destination.tag == EMPTY)
             {
-                // Check square in between for 2-square move
-                if (Board[initRow - 1][initCol].piece != '_')
+                // Check the square in between
+                if (Board[initRow - 1][initCol].tag == EMPTY)
                 {
-                    return 0;
+                    return 1;
                 }
-                return 1;
             }
-            if (difRow == -1 && abs(difCol) == 1 && Destination.tag != EMPTY)
+            // Diagonal capture
+            if (difRow == -1 && abs(difCol) == 1 && Destination.tag != EMPTY && Destination.color != Initial.color)
             {
                 return 1;
             }
         }
         break;
-
     case ROOK:
         if (difRow == 0 || difCol == 0)
         {
@@ -240,58 +253,51 @@ int makeMove(Coord_t moveFrom, Coord_t moveTo) //, FILE *fileText
     return 1;
 }
 
-void intialiseChessBoard()
+void setupBoard()
 {
-    char array[10] = "rnbqkbnr";
-    int values[8] = {5, 3, 3, 9, 0, 3, 3, 5}; // fofr each piece
-    int tag[8] = {ROOK, KNIGHT, BISHOP, QUEEN, KING, BISHOP, KNIGHT, ROOK};
+    memset(Board, 0, sizeof(Board));
+    // Pawns
     for (int i = 0; i < 8; i++)
-    { // initializare prima linie
-        Board[0][i].piece = array[i];
-        Board[0][i].value = values[i];
-        Board[0][i].color = 1;
-        Board[0][i].tag = tag[i];
-        // a doua linie sunt doar pionii
-        Board[1][i].piece = 'p';
-        Board[1][i].value = 1;
-        Board[1][i].tag = 1;
-        Board[1][i].color = 1;
-    }
-
-    for (int i = 2; i < 6; i++)
     {
-        for (int j = 0; j < 8; j++)
-        {
-            Board[i][j].piece = '_';
-            Board[i][j].tag = EMPTY;
-        }
-    } // pozitiile libere de pe tabla
-
-    for (int i = 0; i < 8; i++)
-    { // initializare pionii albi
-        Board[6][i].piece = 'P';
-        Board[6][i].value = 1;
-        Board[6][i].color = 0;
-        Board[6][i].tag = 1;
-
-        Board[7][i].color = 0; // initializare ultima linie
-        Board[7][i].piece = array[i] - ('a' - 'A');
-        Board[7][i].value = values[i];
-        Board[7][i].tag = tag[i];
+        Board[1][i] = (Piece){PAWN, 1, 1}; // Black
+        Board[6][i] = (Piece){PAWN, 0, 1}; // White
     }
+    // Rooks
+    Board[0][0] = Board[0][7] = (Piece){ROOK, 1, 1};
+    Board[7][0] = Board[7][7] = (Piece){ROOK, 0, 1};
+    // Knights
+    Board[0][1] = Board[0][6] = (Piece){KNIGHT, 1, 1};
+    Board[7][1] = Board[7][6] = (Piece){KNIGHT, 0, 1};
+    // Bishops
+    Board[0][2] = Board[0][5] = (Piece){BISHOP, 1, 1};
+    Board[7][2] = Board[7][5] = (Piece){BISHOP, 0, 1};
+    // Queens
+    Board[0][3] = (Piece){QUEEN, 1, 1};
+    Board[7][3] = (Piece){QUEEN, 0, 1};
+    // Kings
+    Board[0][4] = (Piece){KING, 1, 1};
+    Board[7][4] = (Piece){KING, 0, 1};
 }
 
-void render_piece(SDL_Renderer *renderer, SDL_Texture *piece, int col, int row)
+void drawPieces(SDL_Renderer *renderer)
 {
-    int img_width, img_height;
-    SDL_QueryTexture(piece, NULL, NULL, &img_width, &img_height);
-    SDL_Rect dstrect = {
-        80 + SQUARE_SIZE * col + ((SQUARE_SIZE - img_width) / 2),  // x position (centered)
-        80 + SQUARE_SIZE * row + ((SQUARE_SIZE - img_height) / 2), // y position (centered)
-        img_width,                                                 // width
-        img_height                                                 // height
-    };
-    SDL_RenderCopy(renderer, piece, NULL, &dstrect);
+    for (int row = 0; row < BOARD_SIZE; row++)
+    {
+        for (int col = 0; col < BOARD_SIZE; col++)
+        {
+            Piece p = Board[row][col];
+            if (p.tag != EMPTY)
+            {
+                SDL_Rect dest = {
+                    col * SQUARE_SIZE + 85, // x position
+                    row * SQUARE_SIZE + 85, // y position
+                    SQUARE_SIZE - 10,       // width
+                    SQUARE_SIZE - 10        // height
+                };
+                SDL_RenderCopy(renderer, pieceTextures[p.color][p.tag - 1], NULL, &dest);
+            }
+        }
+    }
 }
 
 void render_multiline_text(SDL_Renderer *renderer, TTF_Font *font, const char *text, SDL_Color color, int x, int y, int line_spacing)
@@ -321,11 +327,377 @@ void render_multiline_text(SDL_Renderer *renderer, TTF_Font *font, const char *t
 
     free(text_copy);
 }
-
-void start_game()
+void parse_pgn(const char *filename)
 {
-    printf("Start button clicked\n");
-    // TODO: Add game starting logic here
+    FILE *file = fopen(filename, "r");
+    if (!file)
+    {
+        printf("Failed  opento PGN file: %s\n", filename);
+        return;
+    }
+
+    char line[256];
+    while (fgets(line, sizeof(line), file))
+    {
+        // Skip metadata lines (lines starting with '[')
+        if (line[0] == '[')
+        {
+            continue;
+        }
+
+        // Tokenize the line to extract moves
+        char *token = strtok(line, " ");
+        while (token)
+        {
+            // Skip move numbers (e.g., "1.", "2.")
+            if (strchr(token, '.'))
+            {
+                token = strtok(NULL, " ");
+                continue;
+            }
+
+            // Store the move
+            strncpy(moves[moveCount], token, sizeof(moves[moveCount]) - 1);
+            moves[moveCount][sizeof(moves[moveCount]) - 1] = '\0';
+            moveCount++;
+
+            token = strtok(NULL, " ");
+        }
+    }
+
+    fclose(file);
+}
+
+int pgn_to_coords(const char *move, Coord_t *from, Coord_t *to)
+{
+    // Handle castling
+    if (strcmp(move, "O-O") == 0)
+    {
+        // Kingside castling
+        if (whosTurn == 0)
+        { // White
+            *from = (Coord_t){7, 4};
+            *to = (Coord_t){7, 6};
+        }
+        else
+        { // Black
+            *from = (Coord_t){0, 4};
+            *to = (Coord_t){0, 6};
+        }
+        return 1;
+    }
+    else if (strcmp(move, "O-O-O") == 0)
+    {
+        // Queenside castling
+        if (whosTurn == 0)
+        { // White
+            *from = (Coord_t){7, 4};
+            *to = (Coord_t){7, 2};
+        }
+        else
+        { // Black
+            *from = (Coord_t){0, 4};
+            *to = (Coord_t){0, 2};
+        }
+        return 1;
+    }
+
+    // Handle standard moves (e.g., e4, Nf3)
+    int col = move[strlen(move) - 2] - 'a';       // Column (file)
+    int row = 8 - (move[strlen(move) - 1] - '0'); // Row (rank)
+
+    // Find the piece to move
+    for (int r = 0; r < BOARD_SIZE; r++)
+    {
+        for (int c = 0; c < BOARD_SIZE; c++)
+        {
+            Piece p = Board[r][c];
+            if (p.tag != EMPTY && p.color == whosTurn)
+            {
+                // Check if the piece can move to the target square
+                if (validateMove(c, r, col, row))
+                {
+                    *from = (Coord_t){r, c};
+                    *to = (Coord_t){row, col};
+                    return 1;
+                }
+            }
+        }
+    }
+
+    return 0; // Move not found
+}
+
+void tutorial_mode(SDL_Renderer *renderer)
+{
+    printf("Tutorial mode started\n");
+
+    parse_pgn("tutorial.pgn"); // Load the PGN file
+
+    for (int i = 0; i < moveCount; i++)
+    {
+        Coord_t from, to;
+        if (pgn_to_coords(moves[i], &from, &to))
+        {
+            makeMove(from, to);
+            printf("Move %d: %s\n", i + 1, moves[i]);
+
+            // Render the board
+            SDL_SetRenderDrawColor(renderer, 48, 0, 72, 255);
+            SDL_RenderClear(renderer);
+
+            // Render chessboard
+            for (int row = 0; row < BOARD_SIZE; row++)
+            {
+                for (int col = 0; col < BOARD_SIZE; col++)
+                {
+                    SDL_Rect square = {col * SQUARE_SIZE + 80, row * SQUARE_SIZE + 80, SQUARE_SIZE, SQUARE_SIZE};
+                    if ((row + col) % 2 == 0)
+                        SDL_SetRenderDrawColor(renderer, 240, 209, 250, 255);
+                    else
+                        SDL_SetRenderDrawColor(renderer, 185, 50, 230, 255);
+                    SDL_RenderFillRect(renderer, &square);
+                }
+            }
+
+            // Render pieces
+            drawPieces(renderer);
+
+            SDL_RenderPresent(renderer);
+
+            SDL_Delay(1000); // Pause for 1 second between moves
+        }
+        else
+        {
+            printf("Invalid move: %s\n", moves[i]);
+        }
+    }
+
+    printf("Tutorial mode finished\n");
+}
+
+int ai_make_move()
+{
+    // Iterate over all Black pieces and find a valid move
+    for (int row = 0; row < BOARD_SIZE; row++)
+    {
+        for (int col = 0; col < BOARD_SIZE; col++)
+        {
+            Piece p = Board[row][col];
+            if (p.tag != EMPTY && p.color == 1)
+            { // AI controls Black pieces
+                for (int destRow = 0; destRow < BOARD_SIZE; destRow++)
+                {
+                    for (int destCol = 0; destCol < BOARD_SIZE; destCol++)
+                    {
+                        if (validateMove(col, row, destCol, destRow))
+                        {
+                            Coord_t moveFrom = {row, col};
+                            Coord_t moveTo = {destRow, destCol};
+                            makeMove(moveFrom, moveTo);
+                            printf("AI moved: (%d, %d) -> (%d, %d)\n", row, col, destRow, destCol);
+                            return 1; // Move successful
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return 0; // No valid moves found
+}
+void trainer_mode(SDL_Renderer *renderer)
+{
+    printf("Trainer mode (Human vs AI) started\n");
+
+    int move = 0;            // Keeps track of whose turn it is (0 = Human/White, 1 = AI/Black)
+    Coord_t From = {-1, -1}; // Initialize with invalid coordinates
+    Coord_t To = {-1, -1};   // Initialize with invalid coordinates
+
+    while (running)
+    {
+        if (move % 2 == 0)
+        { // Human's turn
+            SDL_Event event;
+            while (SDL_PollEvent(&event))
+            {
+                if (event.type == SDL_QUIT)
+                {
+                    running = 0;
+                    break;
+                }
+                else if (event.type == SDL_MOUSEBUTTONDOWN)
+                {
+                    Coord_t clicked = handleMouseClick(&event.button);
+
+                    // Ensure the click is within the chessboard bounds
+                    if (clicked.x >= 0 && clicked.x < BOARD_SIZE && clicked.y >= 0 && clicked.y < BOARD_SIZE)
+                    {
+                        if (From.x == -1 && From.y == -1)
+                        { // Selecting a piece
+                            Piece selectedPiece = Board[clicked.x][clicked.y];
+                            if (selectedPiece.tag != EMPTY && selectedPiece.color == 0)
+                            {                   // Human can only move White pieces
+                                From = clicked; // Store the selected piece's coordinates
+                                printf("Selected piece at (%d, %d)\n", From.x, From.y);
+                            }
+                            else
+                            {
+                                printf("Invalid selection. Select your own piece.\n");
+                            }
+                        }
+                        else
+                        { // Selecting a destination square
+                            To = clicked;
+                            printf("Attempting move: (%d, %d) -> (%d, %d)\n", From.x, From.y, To.x, To.y);
+
+                            // Attempt to make the move
+                            if (makeMove(From, To))
+                            {
+                                printf("Move made: (%d, %d) -> (%d, %d)\n", From.x, From.y, To.x, To.y);
+                                move++; // Switch turn to AI
+                            }
+                            else
+                            {
+                                printf("Invalid move. Try again.\n");
+                            }
+
+                            // Reset selection
+                            From.x = -1;
+                            From.y = -1;
+                            To.x = -1;
+                            To.y = -1;
+                        }
+                    }
+                }
+            }
+        }
+        else
+        { // AI's turn
+            printf("AI's turn\n");
+            SDL_Delay(500); // Add a small delay to simulate thinking time
+            if (ai_make_move())
+            {
+                move++; // Switch turn to Human
+            }
+            else
+            {
+                printf("AI could not make a move\n");
+            }
+        }
+
+        // Render only the chessboard and pieces
+        for (int row = 0; row < BOARD_SIZE; row++)
+        {
+            for (int col = 0; col < BOARD_SIZE; col++)
+            {
+                SDL_Rect square = {col * SQUARE_SIZE + 80, row * SQUARE_SIZE + 80, SQUARE_SIZE, SQUARE_SIZE};
+                if ((row + col) % 2 == 0)
+                    SDL_SetRenderDrawColor(renderer, 240, 209, 250, 255);
+                else
+                    SDL_SetRenderDrawColor(renderer, 185, 50, 230, 255);
+                SDL_RenderFillRect(renderer, &square);
+            }
+        }
+
+        // Render pieces
+        drawPieces(renderer);
+
+        SDL_RenderPresent(renderer);
+    }
+}
+
+Coord_t handleMouseClick(SDL_MouseButtonEvent *click);
+
+void casual_mode(SDL_Renderer *renderer)
+{
+    printf("Casual mode (Human vs Human) started\n");
+
+    int move = 0;            // Keeps track of whose turn it is (0 = White, 1 = Black)
+    Coord_t From = {-1, -1}; // Initialize with invalid coordinates
+    Coord_t To = {-1, -1};   // Initialize with invalid coordinates
+
+    while (running)
+    {
+        SDL_Event event;
+        while (SDL_PollEvent(&event))
+        {
+            if (event.type == SDL_QUIT)
+            {
+                running = 0;
+                break;
+            }
+            else if (event.type == SDL_MOUSEBUTTONDOWN)
+            {
+                Coord_t clicked = handleMouseClick(&event.button);
+
+                // Ensure the click is within the chessboard bounds
+                if (clicked.x >= 0 && clicked.x < BOARD_SIZE && clicked.y >= 0 && clicked.y < BOARD_SIZE)
+                {
+                    if (From.x == -1 && From.y == -1)
+                    { // Selecting a piece
+                        Piece selectedPiece = Board[clicked.x][clicked.y];
+                        if (selectedPiece.tag != EMPTY && selectedPiece.color == move % 2)
+                        {
+                            From = clicked; // Store the selected piece's coordinates
+                            printf("Selected piece at (%d, %d)\n", From.x, From.y);
+                        }
+                        else
+                        {
+                            printf("Invalid selection. Select your own piece.\n");
+                        }
+                    }
+                    else
+                    { // Selecting a destination square
+                        To = clicked;
+                        printf("Attempting move: (%d, %d) -> (%d, %d)\n", From.x, From.y, To.x, To.y);
+
+                        // Attempt to make the move
+                        if (makeMove(From, To))
+                        {
+                            printf("Move made: (%d, %d) -> (%d, %d)\n", From.x, From.y, To.x, To.y);
+                            move++; // Switch turn
+                        }
+                        else
+                        {
+                            printf("Invalid move. Try again.\n");
+                        }
+
+                        // Reset selection
+                        From.x = -1;
+                        From.y = -1;
+                        To.x = -1;
+                        To.y = -1;
+                    }
+                }
+            }
+        }
+
+        // Render only the chessboard and pieces
+        for (int row = 0; row < BOARD_SIZE; row++)
+        {
+            for (int col = 0; col < BOARD_SIZE; col++)
+            {
+                SDL_Rect square = {col * SQUARE_SIZE + 80, row * SQUARE_SIZE + 80, SQUARE_SIZE, SQUARE_SIZE};
+                if ((row + col) % 2 == 0)
+                    SDL_SetRenderDrawColor(renderer, 240, 209, 250, 255);
+                else
+                    SDL_SetRenderDrawColor(renderer, 185, 50, 230, 255);
+                SDL_RenderFillRect(renderer, &square);
+            }
+        }
+
+        // Render pieces
+        drawPieces(renderer);
+
+        SDL_RenderPresent(renderer);
+    }
+}
+void exit_game()
+{
+    printf("Exit button clicked\n");
+    // SDL_Quit();
+    // exit(0);
+    running = 0; // Set running to 0 to exit the main loop
 }
 
 void save_game()
@@ -342,76 +714,85 @@ void reload_game()
 
 void open_progress_window()
 {
-    // SDL_Window *progressWindow = SDL_CreateWindow("Progress",
-    //                                               SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 300, 300, SDL_WINDOW_SHOWN);
-    // if (!progressWindow)
-    // {
-    //     SDL_Log("Failed to create progress window: %s", SDL_GetError());
-    //     return;
-    // }
+    SDL_Window *progressWindow = SDL_CreateWindow("Progress", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 300, 300, SDL_WINDOW_SHOWN);
+    if (!progressWindow)
+    {
+        SDL_Log("Failed to create progress window: %s", SDL_GetError());
+        return;
+    }
 
-    // SDL_Renderer *progressRenderer = SDL_CreateRenderer(progressWindow, -1, SDL_RENDERER_ACCELERATED);
-    // if (!progressRenderer)
-    // {
-    //     SDL_DestroyWindow(progressWindow);
-    //     SDL_Log("Failed to create progress renderer: %s", SDL_GetError());
-    //     return;
-    // }
+    SDL_Renderer *progressRenderer = SDL_CreateRenderer(progressWindow, -1, SDL_RENDERER_ACCELERATED);
+    if (!progressRenderer)
+    {
+        SDL_DestroyWindow(progressWindow);
+        SDL_Log("Failed to create progress renderer: %s", SDL_GetError());
+        return;
+    }
 
-    // int running = 1;
-    // SDL_Event e;
-    // while (running)
-    // {
-    //     while (SDL_PollEvent(&e))
-    //     {
-    //         if (e.type == SDL_QUIT)
-    //         {
-    //             running = 0; // just quit this window's loop
-    //         }
-    //     }
+    TTF_Font *progressFont = TTF_OpenFont("./assets/CutePixel.ttf", 24);
+    if (!progressFont)
+    {
+        SDL_Log("Failed to load font for progress window: %s", TTF_GetError());
+        SDL_DestroyRenderer(progressRenderer);
+        SDL_DestroyWindow(progressWindow);
+        return;
+    }
 
-    //     SDL_SetRenderDrawColor(progressRenderer, 200, 200, 255, 255);
-    //     SDL_RenderClear(progressRenderer);
-    //     SDL_RenderPresent(progressRenderer);
-    // }
+    int running = 1;
+    SDL_Event e;
+    while (running)
+    {
+        while (SDL_PollEvent(&e))
+        {
+            if (e.type == SDL_QUIT)
+            {
+                running = 0; // Handle window close button
+            }
+            else if (e.type == SDL_KEYDOWN)
+            {
+                if (e.key.keysym.sym == SDLK_ESCAPE)
+                {
+                    running = 0; // Handle ESC key
+                }
+            }
+            else if (e.type == SDL_WINDOWEVENT)
+            {
+                if (e.window.event == SDL_WINDOWEVENT_CLOSE &&
+                    e.window.windowID == SDL_GetWindowID(progressWindow))
+                {
+                    running = 0; // Specifically handle this window's close event
+                }
+            }
+        }
 
-    // SDL_DestroyRenderer(progressRenderer);
-    // SDL_DestroyWindow(progressWindow);
-    printf("Progress\n");
-    // ⚠️ DO NOT call SDL_Quit() or TTF_Quit() here!
-}
+        // Rendering
+        SDL_SetRenderDrawColor(progressRenderer, 200, 200, 255, 255);
+        SDL_RenderClear(progressRenderer);
 
-// SDL_Rect boardToScreen(int x, int y)
-// {
-//     return (SDL_Rect){
-//         100 + x * SQUARE_SIZE,
-//         100 + y * SQUARE_SIZE,
-//         SQUARE_SIZE,
-//         SQUARE_SIZE};
-// }
+        // Add some text
+        SDL_Color textColor = {0, 0, 0, 255};
+        SDL_Surface *textSurface = TTF_RenderText_Blended(progressFont, "Game Progress", textColor);
+        if (textSurface)
+        {
+            SDL_Texture *textTexture = SDL_CreateTextureFromSurface(progressRenderer, textSurface);
+            SDL_Rect textRect = {50, 50, textSurface->w, textSurface->h};
+            SDL_RenderCopy(progressRenderer, textTexture, NULL, &textRect);
+            SDL_FreeSurface(textSurface);
+            SDL_DestroyTexture(textTexture);
+        }
 
-// SDL_Point screenToBoard(int x_coord, int y_coord)
-// {
-//     return (SDL_Point){
-//         (x_coord - 100) / SQUARE_SIZE,
-//         (y_coord - 100) / SQUARE_SIZE};
-// }
+        SDL_RenderPresent(progressRenderer);
+    }
 
-// Convert mouse input into chess table coordinates
-Coord_t handleMouseClick(SDL_MouseButtonEvent *click)
-{
-    Coord_t coord;
-    coord.y = (click->x - 100) / SQUARE_SIZE;
-    coord.x = (click->y - 100) / SQUARE_SIZE;
-    return coord;
+    // Cleanup
+    TTF_CloseFont(progressFont);
+    SDL_DestroyRenderer(progressRenderer);
+    SDL_DestroyWindow(progressWindow);
 }
 
 int main(int argc, char *argv[])
 {
-    AllocConsole();
-    freopen("CONOUT$", "w", stdout);
-    freopen("CONOUT$", "w", stderr);
-    // 1. Initialize SDL
+    setupBoard();
     if (SDL_Init(SDL_INIT_VIDEO) != 0)
     {
         SDL_Log("Unable to initialize SDL: %s", SDL_GetError());
@@ -471,148 +852,58 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    //
-    SDL_Texture *blackKnight = IMG_LoadTexture(renderer, "./assets/knight1.png");
-    SDL_Texture *blackPawn = IMG_LoadTexture(renderer, "./assets/pawn1.png");
-    SDL_Texture *blackBishop = IMG_LoadTexture(renderer, "./assets/bishop1.png");
-    SDL_Texture *blackRook = IMG_LoadTexture(renderer, "./assets/rook1.png");
-    SDL_Texture *blackQueen = IMG_LoadTexture(renderer, "./assets/queen1.png");
-    SDL_Texture *blackKing = IMG_LoadTexture(renderer, "./assets/king1.png");
+    for (int color = 0; color < 2; color++)
+    {
+        for (int type = 0; type < 6; type++)
+        {
+            SDL_Surface *surf = IMG_Load(pieceFiles[color][type]);
+            if (!surf)
+            {
+                printf("Failed to load %s\n", pieceFiles[color][type]);
+                return 1;
+            }
+            pieceTextures[color][type] = SDL_CreateTextureFromSurface(renderer, surf);
+            SDL_FreeSurface(surf);
+        }
+    }
 
-    SDL_Texture *whiteKnight = IMG_LoadTexture(renderer, "./assets/knight.png");
-    SDL_Texture *whitePawn = IMG_LoadTexture(renderer, "./assets/pawn.png");
-    SDL_Texture *whiteBishop = IMG_LoadTexture(renderer, "./assets/bishop.png");
-    SDL_Texture *whiteRook = IMG_LoadTexture(renderer, "./assets/rook.png");
-    SDL_Texture *whiteQueen = IMG_LoadTexture(renderer, "./assets/queen.png");
-    SDL_Texture *whiteKing = IMG_LoadTexture(renderer, "./assets/king.png");
-
-    SDL_Color White = {255, 255, 255, 255};
-    SDL_Color Grey = {0, 0, 0, 100};
-    SDL_Color Pink = {240, 209, 250, 255}; // bright pink, outilnes text from menu
-    SDL_Color DarkPink = {185, 50, 230, 255};
-
-    SDL_Surface *textSurface5 = TTF_RenderText_Blended(largeFont, "PixelChess", Grey);
-    SDL_Texture *textTexture5 = SDL_CreateTextureFromSurface(renderer, textSurface5);
-    SDL_Rect textRect5 = {52, 17, textSurface5->w, textSurface5->h};
-    SDL_FreeSurface(textSurface5); // shadow for title
-
-    SDL_Surface *textSurface1 = TTF_RenderText_Blended(largeFont, "PixelChess", White);
-    SDL_Texture *textTexture1 = SDL_CreateTextureFromSurface(renderer, textSurface1);
-    SDL_Rect textRect1 = {60, 10, textSurface1->w, textSurface1->h};
-    SDL_FreeSurface(textSurface1);
-
-    SDL_Surface *textSurface2 = TTF_RenderText_Blended(smallFont, " a    b    c    d     e    f    g    h", White);
-    SDL_Texture *textTexture2 = SDL_CreateTextureFromSurface(renderer, textSurface2);
-    SDL_Rect textRect2 = {92, 480, textSurface2->w, textSurface2->h};
-    SDL_FreeSurface(textSurface2);
-
-    SDL_Surface *textSurface3 = TTF_RenderText_Blended(largeFont, "Menu", Grey);
-    SDL_Texture *textTexture3 = SDL_CreateTextureFromSurface(renderer, textSurface3);
-    SDL_Rect textRect3 = {548, 37, textSurface3->w, textSurface3->h};
-    SDL_FreeSurface(textSurface3); // shadow for menu
-
-    SDL_Surface *textSurface4 = TTF_RenderText_Blended(largeFont, "Menu", White);
-    SDL_Texture *textTexture4 = SDL_CreateTextureFromSurface(renderer, textSurface4);
-    SDL_Rect textRect4 = {555, 30, textSurface4->w, textSurface4->h};
-    SDL_FreeSurface(textSurface4);
-
-    SDL_Surface *textSurfaceStart = TTF_RenderText_Blended(mediumFont, "Start", DarkPink);
-    SDL_Texture *textTextureStart = SDL_CreateTextureFromSurface(renderer, textSurfaceStart);
-    SDL_Rect textRectStart = {572, 130, textSurfaceStart->w, textSurfaceStart->h};
-    SDL_FreeSurface(textSurfaceStart);
-
-    SDL_Surface *textSurfaceSave = TTF_RenderText_Blended(mediumFont, "Save", DarkPink);
-    SDL_Texture *textTextureSave = SDL_CreateTextureFromSurface(renderer, textSurfaceSave);
-    SDL_Rect textRectSave = {572, 210, textSurfaceSave->w, textSurfaceSave->h};
-    SDL_FreeSurface(textSurfaceSave);
-
-    SDL_Surface *textSurfaceReload = TTF_RenderText_Blended(mediumFont, "Reload", DarkPink);
-    SDL_Texture *textTextureReload = SDL_CreateTextureFromSurface(renderer, textSurfaceReload);
-    SDL_Rect textRectReload = {563, 290, textSurfaceReload->w, textSurfaceReload->h};
-    SDL_FreeSurface(textSurfaceReload);
-
-    SDL_Surface *textSurfaceProgress = TTF_RenderText_Blended(mediumFont, "Progress", DarkPink);
-    SDL_Texture *textTextureProgress = SDL_CreateTextureFromSurface(renderer, textSurfaceProgress);
-    SDL_Rect textRectProgress = {546, 370, textSurfaceProgress->w, textSurfaceProgress->h};
-    SDL_FreeSurface(textSurfaceProgress);
-
-    SDL_Surface *textSurfaceStart1 = TTF_RenderText_Blended(mediumFont, "Start", Pink);
-    SDL_Texture *textTextureStart1 = SDL_CreateTextureFromSurface(renderer, textSurfaceStart1);
-    SDL_Rect textRectStart1 = {577, 128, textSurfaceStart1->w, textSurfaceStart1->h};
-    SDL_FreeSurface(textSurfaceStart1);
-
-    SDL_Surface *textSurfaceSave1 = TTF_RenderText_Blended(mediumFont, "Save", Pink);
-    SDL_Texture *textTextureSave1 = SDL_CreateTextureFromSurface(renderer, textSurfaceSave1);
-    SDL_Rect textRectSave1 = {577, 208, textSurfaceSave1->w, textSurfaceSave1->h};
-    SDL_FreeSurface(textSurfaceSave1);
-
-    SDL_Surface *textSurfaceReload1 = TTF_RenderText_Blended(mediumFont, "Reload", Pink);
-    SDL_Texture *textTextureReload1 = SDL_CreateTextureFromSurface(renderer, textSurfaceReload1);
-    SDL_Rect textRectReload1 = {568, 288, textSurfaceReload1->w, textSurfaceReload1->h};
-    SDL_FreeSurface(textSurfaceReload1);
-
-    SDL_Surface *textSurfaceProgress1 = TTF_RenderText_Blended(mediumFont, "Progress", Pink);
-    SDL_Texture *textTextureProgress1 = SDL_CreateTextureFromSurface(renderer, textSurfaceProgress1);
-    SDL_Rect textRectProgress1 = {551, 368, textSurfaceProgress1->w, textSurfaceProgress1->h};
-    SDL_FreeSurface(textSurfaceProgress1);
+    SDL_Color White = {255, 255, 255, 255};   // white
+    SDL_Color Grey = {0, 0, 0, 100};          // shadow
+    SDL_Color Pink = {240, 209, 250, 255};    // bright pink, outilnes text from menu
+    SDL_Color DarkPink = {185, 50, 230, 255}; // dark pink, text from menu
 
     const char *multilineText = "1\n2\n3\n4\n5\n6\n7\n8";
 
-    if (!blackKnight)
-    {
-        printf("Failed to load image: %s\n", IMG_GetError());
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
+    SDL_Rect buttonRects[7] = {
+        {534, 120, 130, 50}, {680, 120, 130, 50}, {534, 200, 130, 50}, {680, 200, 130, 50}, {534, 340, 130, 50}, {680, 340, 130, 50}, {534, 420, 276, 50}};
+    const char *buttonTexts[7] = {"Tutorial", "Trainer", "Casual", "Exit", "Save", "Load", "Progress"};
 
-    intialiseChessBoard();
+    SDL_Texture *buttonTextures[7];
+    SDL_Texture *buttonShadowTextures[7];
+    SDL_Rect buttonTextRects[7];
+    SDL_Rect buttonShadowRects[7];
+    SDL_Color buttonTextColor = {185, 50, 230, 255};
+    SDL_Color buttonShadowColor = {240, 209, 250, 255};
 
-    void showChessTable()
+    for (int i = 0; i < 7; i++)
     {
-        for (int i = 0; i < 8; i++)
-        {
-            for (int j = 0; j < 8; j++)
-            {
-                if (Board[i][j].piece == 'p')
-                    render_piece(renderer, blackPawn, j, i);
-                else if (Board[i][j].piece == 'P')
-                    render_piece(renderer, whitePawn, j, i);
-                else if (Board[i][j].piece == 'b')
-                    render_piece(renderer, blackBishop, j, i);
-                else if (Board[i][j].piece == 'n')
-                    render_piece(renderer, blackKnight, j, i);
-                else if (Board[i][j].piece == 'r')
-                    render_piece(renderer, blackRook, j, i);
-                else if (Board[i][j].piece == 'B')
-                    render_piece(renderer, whiteBishop, j, i);
-                else if (Board[i][j].piece == 'N')
-                    render_piece(renderer, whiteKnight, j, i);
-                else if (Board[i][j].piece == 'R')
-                    render_piece(renderer, whiteRook, j, i);
-                else if (Board[i][j].piece == 'q')
-                    render_piece(renderer, blackQueen, j, i);
-                else if (Board[i][j].piece == 'k')
-                    render_piece(renderer, blackKing, j, i);
-                else if (Board[i][j].piece == 'Q')
-                    render_piece(renderer, whiteQueen, j, i);
-                else if (Board[i][j].piece == 'K')
-                    render_piece(renderer, whiteKing, j, i);
-            }
-        }
+        SDL_Surface *text = TTF_RenderText_Blended(mediumFont, buttonTexts[i], White);
+        buttonTextures[i] = SDL_CreateTextureFromSurface(renderer, text);
+        buttonTextRects[i] = (SDL_Rect){
+            buttonRects[i].x + (buttonRects[i].w - text->w) / 2,
+            buttonRects[i].y + (buttonRects[i].h - text->h) / 2,
+            text->w, text->h};
+        SDL_FreeSurface(text);
     }
 
     Coord_t From;
     Coord_t To;
     // 4. Main loop
-    int running = 1;
+
     int move = 0;
     int started = 0;
     while (running)
     {
-
         SDL_Event event;
         while (SDL_PollEvent(&event))
         {
@@ -622,61 +913,53 @@ int main(int argc, char *argv[])
             }
             else if (event.type == SDL_MOUSEBUTTONDOWN)
             {
-                Coord_t Aux = handleMouseClick(&event.button);
-                if (Aux.x > 7 || Aux.x < 0 || Aux.y > 7 || Aux.y < 0)
-                {
-                    int mx = event.button.x;
-                    int my = event.button.y;
+                int mx = event.button.x; // Mouse X coordinate
+                int my = event.button.y; // Mouse Y coordinate
 
-                    if (mx >= textRectStart.x && mx <= textRectStart.x + textRectStart.w &&
-                        my >= textRectStart.y && my <= textRectStart.y + textRectStart.h)
-                    {
-                        start_game();
-                        started = 1;
-                    }
-                    else if (mx >= textRectSave.x && mx <= textRectSave.x + textRectSave.w && my >= textRectSave.y && my <= textRectSave.y + textRectSave.h)
-                    {
-                        save_game();
-                    }
-                    else if (mx >= textRectReload.x && mx <= textRectReload.x + textRectReload.w && my >= textRectReload.y && my <= textRectReload.y + textRectReload.h)
-                    {
-                        reload_game();
-                    }
-                    else if (mx >= textRectProgress.x && mx <= textRectProgress.x + textRectProgress.w &&
-                             my >= textRectProgress.y && my <= textRectProgress.y + textRectProgress.h)
-                    {
-                        open_progress_window();
-                    }
-                }
-                else if (started == 1)
+                for (int i = 0; i < 7; i++)
                 {
-                    if (move % 2 == 0)
+                    if (mx >= buttonRects[i].x && mx <= buttonRects[i].x + buttonRects[i].w &&
+                        my >= buttonRects[i].y && my <= buttonRects[i].y + buttonRects[i].h)
                     {
-                        move++;
-                        From = Aux;
+                        // Button clicked
+                        switch (i)
+                        {
+                        case 0: // Tutorial button
+                            tutorial_mode(renderer);
+                            break;
+                        case 1: // Trainer button
+                            trainer_mode(renderer);
+                            break;
+                        case 2: // Casual button
+                            casual_mode(renderer);
+                            break;
+                        case 3: // Exit button
+                            // running = 0; // Exit the game
+                            exit_game();
+                            break;
+                        case 4: // Save button
+                            save_game();
+                            break;
+                        case 5: // Load button
+                            reload_game();
+                            break;
+                        case 6: // Progress button
+                            open_progress_window();
+                            break;
+                        default:
+                            printf("Unknown button clicked\n");
+                            break;
+                        }
                     }
-                    else
-                    {
-                        move++;
-                        To = Aux;
-                        makeMove(From, To);
-                        printf("%d %d : %d %d\n", From.x, From.y, Aux.x, Aux.y);
-                    }
-
-                    // printf("%d", move);
-                    whosTurn = move % 2;
                 }
             }
         }
-
-        // Clear the screen to black
-        SDL_SetRenderDrawColor(renderer, 48, 0, 72, 1);
+        // Render everything
+        SDL_SetRenderDrawColor(renderer, 48, 0, 72, 255);
         SDL_RenderClear(renderer);
 
-        // the offset
-        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND); // for transparency
-        SDL_Rect extraRect = {50, 100, 410, 410};                  // x, y, width, height
-        SDL_SetRenderDrawColor(renderer, 176, 75, 165, 150);
+        SDL_Rect extraRect = {50, 100, 410, 410};
+        SDL_SetRenderDrawColor(renderer, 112, 0, 112, 255); // shadow color for board;
         SDL_RenderFillRect(renderer, &extraRect);
 
         for (int row = 0; row < BOARD_SIZE; row++)
@@ -684,59 +967,87 @@ int main(int argc, char *argv[])
             for (int col = 0; col < BOARD_SIZE; col++)
             {
                 SDL_Rect square = {col * SQUARE_SIZE + 80, row * SQUARE_SIZE + 80, SQUARE_SIZE, SQUARE_SIZE};
-
-                // Alternate colors
                 if ((row + col) % 2 == 0)
-                {
-                    SDL_SetRenderDrawColor(renderer, 240, 209, 250, 255); // White
-                }
+                    SDL_SetRenderDrawColor(renderer, 240, 209, 250, 255);
                 else
-                {
-                    SDL_SetRenderDrawColor(renderer, 185, 50, 230, 255); // for black //dark purple
-                }
+                    SDL_SetRenderDrawColor(renderer, 185, 50, 230, 255);
                 SDL_RenderFillRect(renderer, &square);
             }
         }
 
-        SDL_RenderCopy(renderer, textTexture5, NULL, &textRect5); // CONTEAZA ORDINEA
-        SDL_RenderCopy(renderer, textTexture1, NULL, &textRect1);
-        SDL_RenderCopy(renderer, textTexture2, NULL, &textRect2);
+        for (int i = 0; i < 7; i++)
+        {
+            SDL_SetRenderDrawColor(renderer, 112, 0, 112, 255); //  shadow color for button
+            SDL_Rect shadowRect = {
+                buttonRects[i].x - 4, // Offset shadow by 3 pixels
+                buttonRects[i].y + 4,
+                buttonRects[i].w,
+                buttonRects[i].h};
+            SDL_RenderFillRect(renderer, &shadowRect);
+            SDL_SetRenderDrawColor(renderer, 228, 135, 224, 100); // outline color for button
+            SDL_RenderFillRect(renderer, &buttonRects[i]);
+            // SDL_RenderCopy(renderer, buttonShadowTextures[i], NULL, &buttonShadowRects[i]);
+            SDL_RenderCopy(renderer, buttonTextures[i], NULL, &buttonTextRects[i]);
+        }
+
+        // Title and menu labels
+        SDL_Surface *textSurface5 = TTF_RenderText_Blended(largeFont, "PixelChess", Grey);
+        SDL_Texture *textTexture5 = SDL_CreateTextureFromSurface(renderer, textSurface5);
+        SDL_Rect textRect5 = {52, 17, textSurface5->w, textSurface5->h};
+        SDL_FreeSurface(textSurface5); // shadow for title
+        SDL_RenderCopy(renderer, textTexture5, NULL, &textRect5);
+        SDL_DestroyTexture(textTexture5);
+        SDL_Surface *titleSurface = TTF_RenderText_Blended(largeFont, "PixelChess", White);
+        SDL_Texture *titleTexture = SDL_CreateTextureFromSurface(renderer, titleSurface);
+        SDL_Rect titleRect = {60, 10, titleSurface->w, titleSurface->h};
+        SDL_RenderCopy(renderer, titleTexture, NULL, &titleRect);
+        SDL_FreeSurface(titleSurface);
+        SDL_DestroyTexture(titleTexture);
+
+        SDL_Surface *textSurface3 = TTF_RenderText_Blended(largeFont, "Menu", Grey);
+        SDL_Texture *textTexture3 = SDL_CreateTextureFromSurface(renderer, textSurface3);
+        SDL_Rect textRect3 = {598, 37, textSurface3->w, textSurface3->h};
+        SDL_FreeSurface(textSurface3); // shadow for menu
         SDL_RenderCopy(renderer, textTexture3, NULL, &textRect3);
-        SDL_RenderCopy(renderer, textTexture4, NULL, &textRect4);
-        SDL_RenderCopy(renderer, textTextureStart, NULL, &textRectStart);
-        SDL_RenderCopy(renderer, textTextureSave, NULL, &textRectSave);
-        SDL_RenderCopy(renderer, textTextureReload, NULL, &textRectReload);
-        SDL_RenderCopy(renderer, textTextureProgress, NULL, &textRectProgress);
-        SDL_RenderCopy(renderer, textTextureStart1, NULL, &textRectStart1);
-        SDL_RenderCopy(renderer, textTextureSave1, NULL, &textRectSave1);
-        SDL_RenderCopy(renderer, textTextureReload1, NULL, &textRectReload1);
-        SDL_RenderCopy(renderer, textTextureProgress1, NULL, &textRectProgress1);
+        SDL_DestroyTexture(textTexture3);
+        SDL_Surface *menuSurface = TTF_RenderText_Blended(largeFont, "Menu", White);
+        SDL_Texture *menuTexture = SDL_CreateTextureFromSurface(renderer, menuSurface);
+        SDL_Rect menuRect = {605, 30, menuSurface->w, menuSurface->h};
+        SDL_RenderCopy(renderer, menuTexture, NULL, &menuRect);
+        SDL_FreeSurface(menuSurface);
+        SDL_DestroyTexture(menuTexture);
+
+        SDL_Surface *textSurface2 = TTF_RenderText_Blended(smallFont, " a    b    c    d     e    f    g    h", White);
+        SDL_Texture *textTexture2 = SDL_CreateTextureFromSurface(renderer, textSurface2);
+        SDL_Rect textRect2 = {92, 480, textSurface2->w, textSurface2->h};
+        SDL_FreeSurface(textSurface2);
+        SDL_RenderCopy(renderer, textTexture2, NULL, &textRect2);
+        SDL_DestroyTexture(textTexture2);
+
         render_multiline_text(renderer, smallFont, multilineText, White, 63, 107, 18);
 
-        SDL_Rect outline1 = {534, 120, 160, 60};
-        SDL_SetRenderDrawColor(renderer, 240, 209, 250, 255); // Green
-        SDL_RenderDrawRect(renderer, &outline1);
-        SDL_Rect outline2 = {534, 200, 160, 60};
-        SDL_SetRenderDrawColor(renderer, 240, 209, 250, 255); // Green
-        SDL_RenderDrawRect(renderer, &outline2);
-        SDL_Rect outline3 = {534, 280, 160, 60};
-        SDL_SetRenderDrawColor(renderer, 240, 209, 250, 255); // Green
-        SDL_RenderDrawRect(renderer, &outline3);
-        SDL_Rect outline4 = {534, 360, 160, 60};
-        SDL_SetRenderDrawColor(renderer, 240, 209, 250, 255); // Green
-        SDL_RenderDrawRect(renderer, &outline4);
+        drawPieces(renderer);
 
-        showChessTable();
-
-        // Update the screen
         SDL_RenderPresent(renderer);
     }
 
-    // 5. Cleanup
+    for (int i = 0; i < 7; i++)
+    {
+        SDL_DestroyTexture(buttonTextures[i]);
+        // SDL_DestroyTexture(buttonShadowTextures[i]);
+    }
+    for (int color = 0; color < 2; color++)
+        for (int type = 0; type < 6; type++)
+            SDL_DestroyTexture(pieceTextures[color][type]);
+
+    TTF_CloseFont(mediumFont);
+    TTF_CloseFont(largeFont);
+    TTF_CloseFont(smallFont);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
+    TTF_Quit();
     IMG_Quit();
     SDL_Quit();
-#endif
     return 0;
 }
+#endif

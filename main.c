@@ -1,9 +1,35 @@
 #ifdef _WIN32
+
+#include <windows.h>
 #include <SDL2/SDL.h>       // Correct if files are in include/SDL2/ // or #include "SDL.h" depending on setup
 #include <SDL2/SDL_image.h> // Required for PNG/JPG
 #include <SDL2/SDL_ttf.h>
 #include <stdio.h>
 #include <string.h>
+#include <fcntl.h> // For _O_TEXT
+#include <io.h>    // For _open_osfhandle
+
+void RedirectIOToConsole()
+{
+    AllocConsole(); // Create a console window
+
+    // Redirect stdin
+    freopen("CONIN$", "r", stdin);
+
+    // Redirect stdout
+    HANDLE hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
+    int fdStdout = _open_osfhandle((intptr_t)hStdout, _O_TEXT);
+    FILE *fpStdout = _fdopen(fdStdout, "w");
+    freopen("CONOUT$", "w", stdout);
+    setvbuf(stdout, NULL, _IONBF, 0); // Disable buffering
+
+    // Redirect stderr
+    HANDLE hStderr = GetStdHandle(STD_ERROR_HANDLE);
+    int fdStderr = _open_osfhandle((intptr_t)hStderr, _O_TEXT);
+    FILE *fpStderr = _fdopen(fdStderr, "w");
+    freopen("CONOUT$", "w", stderr);
+    setvbuf(stderr, NULL, _IONBF, 0);
+}
 
 #define WINDOW_WIDTH 850
 #define WINDOW_HEIGHT 600
@@ -214,6 +240,44 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
         {
             return 1;
         }
+        if (difRow == 0 && abs(difCol) == 2)
+        {
+            // Check if king is on starting position
+            int startingRow = (Initial.color == 1) ? 0 : 7; // Black king row 0, White king row 7
+            if (initRow != startingRow || initCol != 4)
+            {
+                break; // King not on starting position
+            }
+
+            // Determine rook position based on castling direction
+            int rookCol = (difCol == 2) ? 7 : 0; // Kingside (right) or Queenside (left)
+
+            // Check if rook exists and hasn't moved
+            if (Board[startingRow][rookCol].tag != ROOK || Board[startingRow][rookCol].color != Initial.color)
+            {
+                break; // No rook or wrong color rook
+            }
+
+            // Check if path between king and rook is clear
+            int step = (difCol > 0) ? 1 : -1;
+            for (int col = initCol + step; col != rookCol; col += step)
+            {
+                if (Board[startingRow][col].tag != EMPTY)
+                {
+                    break; // Path is blocked
+                }
+            }
+            int rookNewCol = (difCol == 2) ? 5 : 3; // Kingside rook goes to col 5, Queenside to col 3
+
+            // Move rook from corner to new position
+            Board[startingRow][rookNewCol] = Board[startingRow][rookCol];
+            Board[startingRow][rookCol].tag = EMPTY;
+            Board[startingRow][rookCol].piece = ' ';
+            // If we reach here, castling is valid
+            // Note: This doesn't check for check/checkmate conditions
+            // You may want to add those checks separately
+            return 1;
+        }
         break;
 
     case KNIGHT:
@@ -346,13 +410,13 @@ void parse_pgn(const char *filename)
         }
 
         // Tokenize the line to extract moves
-        char *token = strtok(line, " ");
+        char *token = strtok(line, " \n");
         while (token)
         {
             // Skip move numbers (e.g., "1.", "2.")
             if (strchr(token, '.'))
             {
-                token = strtok(NULL, " ");
+                token = strtok(NULL, " \n");
                 continue;
             }
 
@@ -360,8 +424,8 @@ void parse_pgn(const char *filename)
             strncpy(moves[moveCount], token, sizeof(moves[moveCount]) - 1);
             moves[moveCount][sizeof(moves[moveCount]) - 1] = '\0';
             moveCount++;
-
-            token = strtok(NULL, " ");
+            printf("%s\n", moves[moveCount - 1]);
+            token = strtok(NULL, " \n");
         }
     }
 
@@ -370,17 +434,17 @@ void parse_pgn(const char *filename)
 
 int pgn_to_coords(const char *move, Coord_t *from, Coord_t *to)
 {
+    printf("%s\n", move);
     // Handle castling
     if (strcmp(move, "O-O") == 0)
     {
-        // Kingside castling
-        if (whosTurn == 0)
-        { // White
+        if (whosTurn == 0) // White
+        {
             *from = (Coord_t){7, 4};
             *to = (Coord_t){7, 6};
         }
-        else
-        { // Black
+        else // Black
+        {
             *from = (Coord_t){0, 4};
             *to = (Coord_t){0, 6};
         }
@@ -388,44 +452,137 @@ int pgn_to_coords(const char *move, Coord_t *from, Coord_t *to)
     }
     else if (strcmp(move, "O-O-O") == 0)
     {
-        // Queenside castling
-        if (whosTurn == 0)
-        { // White
+        if (whosTurn == 0) // White
+        {
             *from = (Coord_t){7, 4};
             *to = (Coord_t){7, 2};
         }
-        else
-        { // Black
+        else // Black
+        {
             *from = (Coord_t){0, 4};
             *to = (Coord_t){0, 2};
         }
         return 1;
     }
 
+    int len = strlen(move);
+
+    // Skip move numbers and annotations like "+", "#", "!", "?"
+    const char *clean_move = move;
+    while (*clean_move && (*clean_move < 'A' || *clean_move > 'z'))
+        clean_move++;
+
+    // Remove trailing annotations
+    char temp_move[20];
+    strcpy(temp_move, clean_move);
+    len = strlen(temp_move);
+    while (len > 0 && (temp_move[len - 1] == '+' || temp_move[len - 1] == '#' ||
+                       temp_move[len - 1] == '!' || temp_move[len - 1] == '?'))
+    {
+        temp_move[--len] = '\0';
+    }
+
     // Handle standard moves (e.g., e4, Nf3)
-    int col = move[strlen(move) - 2] - 'a';       // Column (file)
-    int row = 8 - (move[strlen(move) - 1] - '0'); // Row (rank)
+    int col = temp_move[len - 2] - 'a';       // Column (file)
+    int row = 8 - (temp_move[len - 1] - '0'); // Row (rank)
+    printf("%d %d\n", row, col);              // Fixed: print row, col in correct order
+
+    int pieceType; // Piece type
+    if (temp_move[0] >= 'a' && temp_move[0] <= 'h')
+    {
+        pieceType = PAWN;
+    }
+    else
+    {
+        switch (temp_move[0])
+        {
+        case 'K':
+            pieceType = KING;
+            break;
+        case 'Q':
+            pieceType = QUEEN;
+            break;
+        case 'R':
+            pieceType = ROOK;
+            break;
+        case 'B':
+            pieceType = BISHOP;
+            break;
+        case 'N':
+            pieceType = KNIGHT;
+            break;
+        default:
+            return 0; // Invalid piece
+        }
+    }
+
+    int prefer_row = -1, prefer_col = -1;
+
+    // Parse disambiguation (e.g., Nbd2, N1f3, Rh1h8)
+    for (int i = 1; i < len - 2; i++)
+    {
+        if (temp_move[i] == 'x') // Skip capture symbol
+            continue;
+
+        if (temp_move[i] >= 'a' && temp_move[i] <= 'h')
+        {
+            prefer_col = temp_move[i] - 'a'; // Fixed: this should set prefer_col, not prefer_row
+        }
+        else if (temp_move[i] >= '1' && temp_move[i] <= '8')
+        {
+            prefer_row = 8 - (temp_move[i] - '0'); // Fixed: this should set prefer_row, not prefer_col
+        }
+    }
 
     // Find the piece to move
     for (int r = 0; r < BOARD_SIZE; r++)
     {
         for (int c = 0; c < BOARD_SIZE; c++)
         {
-            Piece p = Board[r][c];
-            if (p.tag != EMPTY && p.color == whosTurn)
+            if (pieceType != Board[r][c].tag || Board[r][c].color != whosTurn)
             {
-                // Check if the piece can move to the target square
-                if (validateMove(c, r, col, row))
-                {
-                    *from = (Coord_t){r, c};
-                    *to = (Coord_t){row, col};
-                    return 1;
-                }
+                continue; // Skip if the piece type doesn't match
+            }
+            if (prefer_row != -1 && prefer_row != r)
+            {
+                continue;
+            }
+            if (prefer_col != -1 && prefer_col != c)
+            {
+                continue;
+            }
+            // Check if the piece can move to the target square
+            if (validateMove(c, r, col, row))
+            {
+                *from = (Coord_t){r, c};
+                *to = (Coord_t){row, col};
+                return 1;
             }
         }
     }
 
     return 0; // Move not found
+}
+void exit_game()
+{
+    printf("Exit button clicked\n");
+    // SDL_Quit();
+    // exit(0);
+    setupBoard();
+    whosTurn = 0;
+    // Set running to 0 to exit the main loop
+}
+
+void save_game()
+{
+    printf("Save button clicked\n");
+    // TODO: Add save functionality here
+}
+
+void reload_game()
+{
+    printf("Reload button clicked\n");
+    // TODO: Add reload logic here
 }
 
 void tutorial_mode(SDL_Renderer *renderer)
@@ -433,14 +590,14 @@ void tutorial_mode(SDL_Renderer *renderer)
     printf("Tutorial mode started\n");
 
     parse_pgn("tutorial.pgn"); // Load the PGN file
-
+    printf("Loaded %d moves from PGN file\n", moveCount);
     for (int i = 0; i < moveCount; i++)
     {
         Coord_t from, to;
         if (pgn_to_coords(moves[i], &from, &to))
         {
             makeMove(from, to);
-            printf("Move %d: %s\n", i + 1, moves[i]);
+            // printf("Move %d: %s\n", i + 1, moves[i]);
 
             // Render the board
             SDL_SetRenderDrawColor(renderer, 48, 0, 72, 255);
@@ -465,7 +622,7 @@ void tutorial_mode(SDL_Renderer *renderer)
 
             SDL_RenderPresent(renderer);
 
-            SDL_Delay(1000); // Pause for 1 second between moves
+            SDL_Delay(2000); // Pause for 1 second between moves
         }
         else
         {
@@ -616,18 +773,21 @@ void casual_mode(SDL_Renderer *renderer)
     Coord_t From = {-1, -1}; // Initialize with invalid coordinates
     Coord_t To = {-1, -1};   // Initialize with invalid coordinates
 
-    while (running)
+    int runningGameMode = 1;
+    while (runningGameMode)
     {
         SDL_Event event;
         while (SDL_PollEvent(&event))
         {
             if (event.type == SDL_QUIT)
             {
-                running = 0;
+                runningGameMode = 0;
                 break;
             }
             else if (event.type == SDL_MOUSEBUTTONDOWN)
             {
+                int mx = event.button.x; // Mouse X coordinate
+                int my = event.button.y; // Mouse Y coordinate
                 Coord_t clicked = handleMouseClick(&event.button);
 
                 // Ensure the click is within the chessboard bounds
@@ -669,9 +829,13 @@ void casual_mode(SDL_Renderer *renderer)
                         To.y = -1;
                     }
                 }
+                if (mx >= 680 && mx <= 680 + 130 &&
+                    my >= 200 && my <= 200 + 50)
+                {
+                    runningGameMode = 0;
+                }
             }
         }
-
         // Render only the chessboard and pieces
         for (int row = 0; row < BOARD_SIZE; row++)
         {
@@ -691,25 +855,7 @@ void casual_mode(SDL_Renderer *renderer)
 
         SDL_RenderPresent(renderer);
     }
-}
-void exit_game()
-{
-    printf("Exit button clicked\n");
-    // SDL_Quit();
-    // exit(0);
-    running = 0; // Set running to 0 to exit the main loop
-}
-
-void save_game()
-{
-    printf("Save button clicked\n");
-    // TODO: Add save functionality here
-}
-
-void reload_game()
-{
-    printf("Reload button clicked\n");
-    // TODO: Add reload logic here
+    exit_game();
 }
 
 void open_progress_window()
@@ -793,6 +939,7 @@ void open_progress_window()
 int main(int argc, char *argv[])
 {
     setupBoard();
+    RedirectIOToConsole();
     if (SDL_Init(SDL_INIT_VIDEO) != 0)
     {
         SDL_Log("Unable to initialize SDL: %s", SDL_GetError());
@@ -872,7 +1019,7 @@ int main(int argc, char *argv[])
     SDL_Color Pink = {240, 209, 250, 255};    // bright pink, outilnes text from menu
     SDL_Color DarkPink = {185, 50, 230, 255}; // dark pink, text from menu
 
-    const char *multilineText = "1\n2\n3\n4\n5\n6\n7\n8";
+    const char *multilineText = "8\n7\n6\n5\n4\n3\n2\n1";
 
     SDL_Rect buttonRects[7] = {
         {534, 120, 130, 50}, {680, 120, 130, 50}, {534, 200, 130, 50}, {680, 200, 130, 50}, {534, 340, 130, 50}, {680, 340, 130, 50}, {534, 420, 276, 50}};

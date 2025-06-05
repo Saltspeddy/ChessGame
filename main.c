@@ -662,6 +662,7 @@ int ai_make_move()
     }
     return 0; // No valid moves found
 }
+
 void trainer_mode(SDL_Renderer *renderer)
 {
     printf("Trainer mode (Human vs AI) started\n");
@@ -763,7 +764,54 @@ void trainer_mode(SDL_Renderer *renderer)
     }
 }
 
-Coord_t handleMouseClick(SDL_MouseButtonEvent *click);
+SDL_Renderer *globalRenderer;
+
+// Add this global variable to track the selected piece
+Coord_t selectedPiece = {-1, -1};
+
+// Modified generateLegalMoves function - now just stores the selected piece
+void generateLegalMoves(Coord_t from)
+{
+    printf("%d %d\n", from.x, from.y);
+    selectedPiece = from; // Store the selected piece coordinates
+}
+
+// New function to render move highlights
+void renderMoveHighlights(SDL_Renderer *renderer, Coord_t from)
+{
+    if (from.x == -1 || from.y == -1)
+        return; // No piece selected
+
+    // Enable alpha blending for transparency
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+
+    for (int i = 0; i < BOARD_SIZE; i++)
+    {
+        for (int j = 0; j < BOARD_SIZE; j++)
+        {
+            if (validateMove(from.y, from.x, j, i))
+            {
+                SDL_Rect square = {j * SQUARE_SIZE + 80, i * SQUARE_SIZE + 80, SQUARE_SIZE, SQUARE_SIZE};
+
+                // Set a semi-transparent green color for valid moves
+                SDL_SetRenderDrawColor(renderer, 0, 255, 0, 100); // Green with 100/255 opacity
+                SDL_RenderFillRect(renderer, &square);
+
+                // Optional: Add a border for better visibility
+                SDL_SetRenderDrawColor(renderer, 0, 200, 0, 200); // Darker green border
+                SDL_RenderDrawRect(renderer, &square);
+            }
+        }
+    }
+
+    // Highlight the selected piece with a different color
+    SDL_Rect selectedSquare = {from.y * SQUARE_SIZE + 80, from.x * SQUARE_SIZE + 80, SQUARE_SIZE, SQUARE_SIZE};
+    SDL_SetRenderDrawColor(renderer, 255, 255, 0, 120); // Yellow highlight for selected piece
+    SDL_RenderFillRect(renderer, &selectedSquare);
+
+    // Reset blend mode
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+}
 
 void casual_mode(SDL_Renderer *renderer)
 {
@@ -795,15 +843,18 @@ void casual_mode(SDL_Renderer *renderer)
                 {
                     if (From.x == -1 && From.y == -1)
                     { // Selecting a piece
-                        Piece selectedPiece = Board[clicked.x][clicked.y];
-                        if (selectedPiece.tag != EMPTY && selectedPiece.color == move % 2)
+                        Piece selectedPieceObj = Board[clicked.x][clicked.y];
+                        if (selectedPieceObj.tag != EMPTY && selectedPieceObj.color == whosTurn)
                         {
-                            From = clicked; // Store the selected piece's coordinates
+                            From = clicked;              // Store the selected piece's coordinates
+                            generateLegalMoves(clicked); // This now just stores the selection
                             printf("Selected piece at (%d, %d)\n", From.x, From.y);
                         }
                         else
                         {
                             printf("Invalid selection. Select your own piece.\n");
+                            selectedPiece.x = -1; // Clear selection
+                            selectedPiece.y = -1;
                         }
                     }
                     else
@@ -827,6 +878,8 @@ void casual_mode(SDL_Renderer *renderer)
                         From.y = -1;
                         To.x = -1;
                         To.y = -1;
+                        selectedPiece.x = -1; // Clear move highlights
+                        selectedPiece.y = -1;
                     }
                 }
                 if (mx >= 680 && mx <= 680 + 130 &&
@@ -836,7 +889,8 @@ void casual_mode(SDL_Renderer *renderer)
                 }
             }
         }
-        // Render only the chessboard and pieces
+
+        // Render the chessboard with original colors
         for (int row = 0; row < BOARD_SIZE; row++)
         {
             for (int col = 0; col < BOARD_SIZE; col++)
@@ -852,6 +906,9 @@ void casual_mode(SDL_Renderer *renderer)
 
         // Render pieces
         drawPieces(renderer);
+
+        // Render move highlights on top of everything
+        renderMoveHighlights(renderer, selectedPiece);
 
         SDL_RenderPresent(renderer);
     }
@@ -991,6 +1048,7 @@ int main(int argc, char *argv[])
         -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
 
+    globalRenderer = renderer;
     if (!renderer)
     {
         SDL_Log("Failed to create renderer: %s", SDL_GetError());

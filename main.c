@@ -69,6 +69,13 @@ typedef struct coordinates
     int y;
 } Coord_t;
 
+typedef struct
+{
+    Coord_t from;
+    Coord_t to;
+    Piece captured; // To support undoing moves
+} Move;
+
 Coord_t handleMouseClick(SDL_MouseButtonEvent *click)
 {
     Coord_t coord;
@@ -94,11 +101,181 @@ char *pieceFiles[2][6] = {
 SDL_Texture *pieceTextures[2][6];
 
 int whosTurn = 0;
+int validateMove(int initCol, int initRow, int destCol, int destRow);
+int isPathClear(int initCol, int initRow, int destCol, int destRow)
+{
+    int difCol = destCol - initCol;
+    int difRow = destRow - initRow;
+    int stepCol;
+    if (difCol == 0)
+    {
+        stepCol = 0;
+    }
+    else
+    {
+        if (difCol > 0)
+        {
+            stepCol = 1;
+        }
+        else
+        {
+            stepCol = -1;
+        }
+    }
+
+    int stepRow;
+    if (difRow == 0)
+    {
+        stepRow = 0;
+    }
+    else
+    {
+        if (difRow > 0)
+        {
+            stepRow = 1;
+        }
+        else
+        {
+            stepRow = -1;
+        }
+    }
+
+    int currCol = initCol + stepCol;
+    int currRow = initRow + stepRow;
+
+    while (currCol != destCol || currRow != destRow)
+    { // pana ajunge la destinatie verifica fiecare pozitie
+        if (Board[currRow][currCol].tag != EMPTY)
+        {
+            return 0; // este blocat
+        }
+        currCol += stepCol;
+        currRow += stepRow;
+    }
+    return 1; // este cale libera
+}
+
+int isSquareAttacked(Coord_t square, int byColor)
+{
+    // Check if the given square is attacked by pieces of the specified color
+    for (int row = 0; row < BOARD_SIZE; row++)
+    {
+        for (int col = 0; col < BOARD_SIZE; col++)
+        {
+            Piece attackingPiece = Board[row][col];
+
+            // Skip empty squares and pieces of the wrong color
+            if (attackingPiece.tag == EMPTY || attackingPiece.color != byColor)
+                continue;
+
+            // Check if this piece can attack the target square
+            if (validateMove(col, row, square.y, square.x))
+            {
+                return 1; // Square is under attack
+            }
+        }
+    }
+    return 0; // Square is not under attack
+}
+
+Coord_t findKing(int color)
+{
+    // Find the king of the specified color
+    for (int row = 0; row < BOARD_SIZE; row++)
+    {
+        for (int col = 0; col < BOARD_SIZE; col++)
+        {
+            Piece p = Board[row][col];
+            if (p.tag == KING && p.color == color)
+            {
+                return (Coord_t){row, col};
+            }
+        }
+    }
+    // This should never happen in a valid game
+    return (Coord_t){-1, -1};
+}
+
+int isInCheck(int color)
+{
+    // Find the king of the specified color
+    Coord_t kingPos = findKing(color);
+
+    if (kingPos.x == -1 || kingPos.y == -1)
+    {
+        return 0; // King not found (shouldn't happen)
+    }
+
+    // Check if the king's square is attacked by the opponent
+    return isSquareAttacked(kingPos, !color);
+}
+
+int wouldMoveResultInCheck(Coord_t from, Coord_t to, int color)
+{
+    // Make a temporary move to test if it results in check
+    Piece tempPiece = Board[to.x][to.y];               // Store the piece that might be captured
+    Board[to.x][to.y] = Board[from.x][from.y];         // Move the piece
+    Board[from.x][from.y] = (Piece){EMPTY, 0, 0, ' '}; // Clear the original square
+
+    int inCheck = isInCheck(color); // Check if the king is in check after the move
+
+    // Restore the board state
+    Board[from.x][from.y] = Board[to.x][to.y];
+    Board[to.x][to.y] = tempPiece;
+
+    return inCheck;
+}
+
+int hasLegalMoves(int color)
+{
+    // Check if the player has any legal moves
+    for (int fromRow = 0; fromRow < BOARD_SIZE; fromRow++)
+    {
+        for (int fromCol = 0; fromCol < BOARD_SIZE; fromCol++)
+        {
+            Piece p = Board[fromRow][fromCol];
+
+            // Skip empty squares and opponent's pieces
+            if (p.tag == EMPTY || p.color != color)
+                continue;
+
+            // Try all possible destination squares
+            for (int toRow = 0; toRow < BOARD_SIZE; toRow++)
+            {
+                for (int toCol = 0; toCol < BOARD_SIZE; toCol++)
+                {
+                    // Check if the move is valid according to piece rules
+                    if (validateMove(fromCol, fromRow, toCol, toRow))
+                    {
+                        // Check if this move would leave the king in check
+                        Coord_t from = {fromRow, fromCol};
+                        Coord_t to = {toRow, toCol};
+
+                        if (!wouldMoveResultInCheck(from, to, color))
+                        {
+                            return 1; // Found at least one legal move
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return 0; // No legal moves found
+}
+
+int isCheckmate(int color)
+{
+    return isInCheck(color) && !hasLegalMoves(color);
+}
+
+int isStalemate(int color)
+{
+    return !isInCheck(color) && !hasLegalMoves(color);
+}
 
 int validateMove(int initCol, int initRow, int destCol, int destRow)
 {
-    printf("%c %d %d : %d %d %c\n\n", Board[initRow][initCol].piece, initRow, initCol, destRow, destCol, Board[destRow][destCol].piece);
-
+    // printf("%c %d %d : %d %d %c\n\n", Board[initRow][initCol].piece, initRow, initCol, destRow, destCol, Board[destRow][destCol].piece);
     Piece Initial = Board[initRow][initCol];
     if (Initial.tag == EMPTY)
     {
@@ -115,57 +292,6 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
     int difRow = destRow - initRow;
 
     // Common path checking function for sliding pieces
-    int isPathClear(int initCol, int initRow, int destCol, int destRow)
-    {
-        int stepCol;
-        if (difCol == 0)
-        {
-            stepCol = 0;
-        }
-        else
-        {
-            if (difCol > 0)
-            {
-                stepCol = 1;
-            }
-            else
-            {
-                stepCol = -1;
-            }
-        }
-
-        int stepRow;
-        if (difRow == 0)
-        {
-            stepRow = 0;
-        }
-        else
-        {
-            if (difRow > 0)
-            {
-                stepRow = 1;
-            }
-            else
-            {
-                stepRow = -1;
-            }
-        }
-
-        int currCol = initCol + stepCol;
-        int currRow = initRow + stepRow;
-
-        while (currCol != destCol || currRow != destRow)
-        { // pana ajunge la destinatie verifica fiecare pozitie
-            if (Board[currRow][currCol].tag != EMPTY)
-            {
-                return 0; // este blocat
-            }
-            currCol += stepCol;
-            currRow += stepRow;
-        }
-        return 1; // este cale libera
-    }
-
     switch (Initial.tag)
     {
     case PAWN:
@@ -297,22 +423,42 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
 
 int makeMove(Coord_t moveFrom, Coord_t moveTo) //, FILE *fileText
 {
-
-    printf("%d %d : %d %d\n", moveFrom.x, moveFrom.y, moveTo.x, moveTo.y);
-
-    if (validateMove(moveFrom.y, moveFrom.x, moveTo.y, moveTo.x))
+    // First validate the move according to piece rules
+    if (!validateMove(moveFrom.y, moveFrom.x, moveTo.y, moveTo.x))
     {
-        // printf("%c", Board[moveFrom.x][moveFrom.y].piece);
-        Board[moveTo.x][moveTo.y] = Board[moveFrom.x][moveFrom.y]; // afcem trecerea catre destiantie
-        Board[moveFrom.x][moveFrom.y].piece = '_';
-        Board[moveFrom.x][moveFrom.y].tag = EMPTY;
-        Board[moveFrom.x][moveFrom.y].value = 0;
-        Board[moveFrom.x][moveFrom.y].color = 0;
-        whosTurn = !whosTurn;
+        printf("Move is invalid according to piece rules\n");
+        return 0;
     }
-    else
+
+    // Check if this move would leave the current player's king in check
+    if (wouldMoveResultInCheck(moveFrom, moveTo, whosTurn))
     {
-        printf("Move is invalid\n");
+        printf("Move is invalid - would leave king in check\n");
+        return 0;
+    }
+
+    // Make the move
+    Piece capturedPiece = Board[moveTo.x][moveTo.y]; // Store for potential undo
+    Board[moveTo.x][moveTo.y] = Board[moveFrom.x][moveFrom.y];
+    Board[moveFrom.x][moveFrom.y] = (Piece){EMPTY, 0, 0, ' '};
+
+    // Switch turns
+    whosTurn = !whosTurn;
+
+    // Check game state after the move
+    if (isCheckmate(whosTurn))
+    {
+        printf("Checkmate! Player %d wins!\n", !whosTurn);
+        // You might want to set a game over flag here
+    }
+    else if (isStalemate(whosTurn))
+    {
+        printf("Stalemate! The game is a draw!\n");
+        // You might want to set a game over flag here
+    }
+    else if (isInCheck(whosTurn))
+    {
+        printf("Check!\n");
     }
     return 1;
 }
@@ -327,20 +473,20 @@ void setupBoard()
         Board[6][i] = (Piece){PAWN, 0, 1}; // White
     }
     // Rooks
-    Board[0][0] = Board[0][7] = (Piece){ROOK, 1, 1};
-    Board[7][0] = Board[7][7] = (Piece){ROOK, 0, 1};
+    Board[0][0] = Board[0][7] = (Piece){ROOK, 1, 5};
+    Board[7][0] = Board[7][7] = (Piece){ROOK, 0, 5};
     // Knights
-    Board[0][1] = Board[0][6] = (Piece){KNIGHT, 1, 1};
-    Board[7][1] = Board[7][6] = (Piece){KNIGHT, 0, 1};
+    Board[0][1] = Board[0][6] = (Piece){KNIGHT, 1, 3};
+    Board[7][1] = Board[7][6] = (Piece){KNIGHT, 0, 3};
     // Bishops
-    Board[0][2] = Board[0][5] = (Piece){BISHOP, 1, 1};
-    Board[7][2] = Board[7][5] = (Piece){BISHOP, 0, 1};
+    Board[0][2] = Board[0][5] = (Piece){BISHOP, 1, 3};
+    Board[7][2] = Board[7][5] = (Piece){BISHOP, 0, 3};
     // Queens
-    Board[0][3] = (Piece){QUEEN, 1, 1};
-    Board[7][3] = (Piece){QUEEN, 0, 1};
+    Board[0][3] = (Piece){QUEEN, 1, 9};
+    Board[7][3] = (Piece){QUEEN, 0, 9};
     // Kings
-    Board[0][4] = (Piece){KING, 1, 1};
-    Board[7][4] = (Piece){KING, 0, 1};
+    Board[0][4] = (Piece){KING, 1, 0};
+    Board[7][4] = (Piece){KING, 0, 0};
 }
 
 void drawPieces(SDL_Renderer *renderer)
@@ -434,7 +580,7 @@ void parse_pgn(const char *filename)
 
 int pgn_to_coords(const char *move, Coord_t *from, Coord_t *to)
 {
-    printf("%s\n", move);
+    // printf("%s\n", move);
     // Handle castling
     if (strcmp(move, "O-O") == 0)
     {
@@ -485,7 +631,7 @@ int pgn_to_coords(const char *move, Coord_t *from, Coord_t *to)
     // Handle standard moves (e.g., e4, Nf3)
     int col = temp_move[len - 2] - 'a';       // Column (file)
     int row = 8 - (temp_move[len - 1] - '0'); // Row (rank)
-    printf("%d %d\n", row, col);              // Fixed: print row, col in correct order
+    // printf("%d %d\n", row, col);              // Fixed: print row, col in correct order
 
     int pieceType; // Piece type
     if (temp_move[0] >= 'a' && temp_move[0] <= 'h')
@@ -633,34 +779,219 @@ void tutorial_mode(SDL_Renderer *renderer)
     printf("Tutorial mode finished\n");
 }
 
-int ai_make_move()
+const int PAWN_POSITION_BONUS[8][8] = {
+    {0, 0, 0, 0, 0, 0, 0, 0},
+    {50, 50, 50, 50, 50, 50, 50, 50},
+    {10, 10, 20, 30, 30, 20, 10, 10},
+    {5, 5, 10, 25, 25, 10, 5, 5},
+    {0, 0, 0, 20, 20, 0, 0, 0},
+    {5, -5, -10, 0, 0, -10, -5, 5},
+    {5, 10, 10, -20, -20, 10, 10, 5},
+    {0, 0, 0, 0, 0, 0, 0, 0}};
+
+const int KNIGHT_POSITION_BONUS[8][8] = {
+    {-50, -40, -30, -30, -30, -30, -40, -50},
+    {-40, -20, 0, 0, 0, 0, -20, -40},
+    {-30, 0, 10, 15, 15, 10, 0, -30},
+    {-30, 5, 15, 20, 20, 15, 5, -30},
+    {-30, 0, 15, 20, 20, 15, 0, -30},
+    {-30, 5, 10, 15, 15, 10, 5, -30},
+    {-40, -20, 0, 5, 5, 0, -20, -40},
+    {-50, -40, -30, -30, -30, -30, -40, -50}};
+
+const int CENTER_CONTROL_BONUS[8][8] = {
+    {0, 0, 0, 0, 0, 0, 0, 0},
+    {0, 5, 5, 5, 5, 5, 5, 0},
+    {0, 5, 10, 10, 10, 10, 5, 0},
+    {0, 5, 10, 15, 15, 10, 5, 0},
+    {0, 5, 10, 15, 15, 10, 5, 0},
+    {0, 5, 10, 10, 10, 10, 5, 0},
+    {0, 5, 5, 5, 5, 5, 5, 0},
+    {0, 0, 0, 0, 0, 0, 0, 0}};
+
+float staticEvaluation()
 {
-    // Iterate over all Black pieces and find a valid move
+    int score = 0;
+
+    // Material evaluation
     for (int row = 0; row < BOARD_SIZE; row++)
     {
         for (int col = 0; col < BOARD_SIZE; col++)
         {
-            Piece p = Board[row][col];
-            if (p.tag != EMPTY && p.color == 1)
-            { // AI controls Black pieces
-                for (int destRow = 0; destRow < BOARD_SIZE; destRow++)
+            Piece piece = Board[row][col];
+            if (piece.tag != EMPTY)
+            {
+                int pieceValue = piece.value * 10;
+
+                // Add position bonuses
+                int positionBonus = 0;
+                if (piece.tag == PAWN)
                 {
-                    for (int destCol = 0; destCol < BOARD_SIZE; destCol++)
+                    positionBonus = PAWN_POSITION_BONUS[row][col];
+                }
+                else if (piece.tag == KNIGHT)
+                {
+                    positionBonus = KNIGHT_POSITION_BONUS[row][col];
+                }
+                else
+                {
+                    positionBonus = CENTER_CONTROL_BONUS[row][col];
+                }
+
+                // Flip position bonus for black pieces
+                if (piece.color == 1)
+                {
+                    positionBonus = PAWN_POSITION_BONUS[7 - row][col];
+                }
+
+                int totalValue = pieceValue + positionBonus;
+
+                if (piece.color == 0)
+                { // White
+                    score += totalValue;
+                }
+                else
+                { // Black
+                    score -= totalValue;
+                }
+            }
+        }
+    }
+
+    // King safety evaluation
+    // score += evaluateKingSafety();
+
+    // Mobility evaluation (number of legal moves)
+    // score += evaluateMobility();
+
+    return score;
+}
+
+void copyBoard(Piece dest[BOARD_SIZE][BOARD_SIZE], Piece src[BOARD_SIZE][BOARD_SIZE])
+{
+    memcpy(dest, src, sizeof(Piece) * BOARD_SIZE * BOARD_SIZE);
+}
+int minimax(int depth, int alpha, int beta, int maximizingPlayer)
+{
+    if (depth == 0)
+    {
+        return staticEvaluation();
+    }
+
+    int best = maximizingPlayer ? -10000 : 10000;
+    Piece tempBoard[BOARD_SIZE][BOARD_SIZE];
+    copyBoard(tempBoard, Board);
+    int turnBefore = whosTurn;
+
+    for (int fromRow = 0; fromRow < BOARD_SIZE; fromRow++)
+    {
+        for (int fromCol = 0; fromCol < BOARD_SIZE; fromCol++)
+        {
+            Piece p = Board[fromRow][fromCol];
+            if (p.tag == EMPTY || p.color != maximizingPlayer)
+                continue;
+
+            for (int toRow = 0; toRow < BOARD_SIZE; toRow++)
+            {
+                for (int toCol = 0; toCol < BOARD_SIZE; toCol++)
+                {
+                    if (!validateMove(fromCol, fromRow, toCol, toRow))
+                        continue;
+
+                    Coord_t from = {fromRow, fromCol};
+                    Coord_t to = {toRow, toCol};
+
+                    makeMove(from, to);
+                    int score = minimax(depth - 1, alpha, beta, !maximizingPlayer);
+                    copyBoard(Board, tempBoard); // Undo move
+                    whosTurn = turnBefore;       // Restore turn
+
+                    if (maximizingPlayer) // Score for the white player
                     {
-                        if (validateMove(col, row, destCol, destRow))
-                        {
-                            Coord_t moveFrom = {row, col};
-                            Coord_t moveTo = {destRow, destCol};
-                            makeMove(moveFrom, moveTo);
-                            printf("AI moved: (%d, %d) -> (%d, %d)\n", row, col, destRow, destCol);
-                            return 1; // Move successful
-                        }
+                        if (score > best)
+                            best = score;
+                        if (score > alpha)
+                            alpha = score;
+                    }
+                    else // score for the black player
+                    {
+                        if (score < best)
+                            best = score;
+                        if (score < beta)
+                            beta = score;
+                    }
+
+                    if (beta <= alpha) // pruning condition
+                        return best;
+                }
+            }
+        }
+    }
+
+    return best;
+}
+
+Coord_t lastAIMoveFrom = {-1, -1};
+Coord_t lastAIMoveTo = {-1, -1};
+
+int ai_make_move()
+{
+    int bestScore = 10000;
+    Coord_t bestFrom = {-1, -1};
+    Coord_t bestTo = {-1, -1};
+
+    Piece tempBoard[BOARD_SIZE][BOARD_SIZE];
+    copyBoard(tempBoard, Board);
+    int turnBefore = whosTurn;
+
+    for (int fromRow = 0; fromRow < BOARD_SIZE; fromRow++)
+    {
+        for (int fromCol = 0; fromCol < BOARD_SIZE; fromCol++)
+        {
+            Piece p = Board[fromRow][fromCol];
+            if (p.tag == EMPTY || p.color != 1)
+                continue; // AI is Black
+
+            for (int toRow = 0; toRow < BOARD_SIZE; toRow++)
+            {
+                for (int toCol = 0; toCol < BOARD_SIZE; toCol++)
+                {
+                    if (!validateMove(fromCol, fromRow, toCol, toRow))
+                        continue;
+
+                    Coord_t from = {fromRow, fromCol};
+                    Coord_t to = {toRow, toCol};
+
+                    makeMove(from, to);
+                    int score = minimax(3, -10000, 10000, 0);
+                    copyBoard(Board, tempBoard);
+                    whosTurn = turnBefore;
+
+                    if (score < bestScore &&
+                        !(from.x == lastAIMoveTo.x && from.y == lastAIMoveTo.y &&
+                          to.x == lastAIMoveFrom.x && to.y == lastAIMoveFrom.y))
+                    {
+                        // Avoid going back and forth between two squares
+                        bestScore = score;
+                        bestFrom = from;
+                        bestTo = to;
                     }
                 }
             }
         }
     }
-    return 0; // No valid moves found
+
+    if (bestFrom.x != -1 && bestTo.x != -1)
+    {
+        printf("AI moves from (%d, %d) to (%d, %d) with eval %d\n", bestFrom.x, bestFrom.y, bestTo.x, bestTo.y, bestScore);
+        makeMove(bestFrom, bestTo);
+        lastAIMoveFrom = bestFrom;
+        lastAIMoveTo = bestTo;
+        return 1;
+    }
+
+    printf("AI found no legal move.\n");
+    return 0;
 }
 
 void trainer_mode(SDL_Renderer *renderer)
@@ -670,8 +1001,8 @@ void trainer_mode(SDL_Renderer *renderer)
     int move = 0;            // Keeps track of whose turn it is (0 = Human/White, 1 = AI/Black)
     Coord_t From = {-1, -1}; // Initialize with invalid coordinates
     Coord_t To = {-1, -1};   // Initialize with invalid coordinates
-
-    while (running)
+    int runningGameMode = 1;
+    while (runningGameMode)
     {
         if (move % 2 == 0)
         { // Human's turn
@@ -680,11 +1011,13 @@ void trainer_mode(SDL_Renderer *renderer)
             {
                 if (event.type == SDL_QUIT)
                 {
-                    running = 0;
+                    runningGameMode = 0;
                     break;
                 }
                 else if (event.type == SDL_MOUSEBUTTONDOWN)
                 {
+                    int mx = event.button.x; // Mouse X coordinate
+                    int my = event.button.y;
                     Coord_t clicked = handleMouseClick(&event.button);
 
                     // Ensure the click is within the chessboard bounds
@@ -726,6 +1059,11 @@ void trainer_mode(SDL_Renderer *renderer)
                             To.y = -1;
                         }
                     }
+                    if (mx >= 680 && mx <= 680 + 130 &&
+                        my >= 200 && my <= 200 + 50)
+                    {
+                        runningGameMode = 0;
+                    }
                 }
             }
         }
@@ -762,6 +1100,7 @@ void trainer_mode(SDL_Renderer *renderer)
 
         SDL_RenderPresent(renderer);
     }
+    exit_game();
 }
 
 SDL_Renderer *globalRenderer;
@@ -772,7 +1111,7 @@ Coord_t selectedPiece = {-1, -1};
 // Modified generateLegalMoves function - now just stores the selected piece
 void generateLegalMoves(Coord_t from)
 {
-    printf("%d %d\n", from.x, from.y);
+    // printf("%d %d\n", from.x, from.y);
     selectedPiece = from; // Store the selected piece coordinates
 }
 
@@ -848,7 +1187,7 @@ void casual_mode(SDL_Renderer *renderer)
                         {
                             From = clicked;              // Store the selected piece's coordinates
                             generateLegalMoves(clicked); // This now just stores the selection
-                            printf("Selected piece at (%d, %d)\n", From.x, From.y);
+                            // printf("Selected piece at (%d, %d)\n", From.x, From.y);
                         }
                         else
                         {
@@ -860,12 +1199,13 @@ void casual_mode(SDL_Renderer *renderer)
                     else
                     { // Selecting a destination square
                         To = clicked;
-                        printf("Attempting move: (%d, %d) -> (%d, %d)\n", From.x, From.y, To.x, To.y);
+                        // printf("Attempting move: (%d, %d) -> (%d, %d)\n", From.x, From.y, To.x, To.y);
 
                         // Attempt to make the move
                         if (makeMove(From, To))
                         {
-                            printf("Move made: (%d, %d) -> (%d, %d)\n", From.x, From.y, To.x, To.y);
+                            printf("%d \n", staticEvaluation());
+                            // printf("Move made: (%d, %d) -> (%d, %d)\n", From.x, From.y, To.x, To.y);
                             move++; // Switch turn
                         }
                         else

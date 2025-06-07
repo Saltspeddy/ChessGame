@@ -274,6 +274,16 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
             {
                 return 1;
             }
+            if (difRow == 1 && abs(difCol) == 1 && Destination.tag == EMPTY)
+            {
+                // Check if this is a valid en passant move
+                if (enPassantCol == destCol && enPassantRow == initRow &&
+                    Board[initRow][destCol].tag == PAWN &&
+                    Board[initRow][destCol].color != Piece.color)
+                {
+                    return 1; // Valid en passant
+                }
+            }
         }
         else
         { // White Pawn
@@ -303,6 +313,16 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
             if (difRow == -1 && abs(difCol) == 1 && Destination.tag != EMPTY)
             {
                 return 1;
+            }
+            if (difRow == -1 && abs(difCol) == 1 && Destination.tag == EMPTY)
+            {
+                // Check if this is a valid en passant move
+                if (enPassantCol == destCol && enPassantRow == initRow &&
+                    Board[initRow][destCol].tag == PAWN &&
+                    Board[initRow][destCol].color != Piece.color)
+                {
+                    return 1; // Valid en passant
+                }
             }
         }
         break;

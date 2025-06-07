@@ -6,6 +6,7 @@
 #include <SDL2/SDL_ttf.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 #include <fcntl.h> // For _O_TEXT
 #include <io.h>    // For _open_osfhandle
 
@@ -37,9 +38,16 @@ void RedirectIOToConsole()
 #define SQUARE_SIZE (400 / BOARD_SIZE)
 #define MAX_MOVES 512
 
+char moveHistory[MAX_MOVES][16];
 char moves[MAX_MOVES][10]; // Array to store moves for pgn file
 int moveCount = 0;         // Number of moves for pgn file
 int running = 1;
+int moveCountP = 0; // Number of move in the current game
+
+SDL_Color White = {255, 255, 255, 255};   // white
+SDL_Color Grey = {0, 0, 0, 100};          // shadow
+SDL_Color Pink = {240, 209, 250, 255};    // bright pink, outilnes text from menu
+SDL_Color DarkPink = {185, 50, 230, 255}; // dark pink, text from menu
 
 enum PieceType
 {
@@ -57,11 +65,12 @@ typedef struct
     unsigned int tag : 3;
     unsigned int color : 1; // 0 is white, 1 is black
     unsigned int value : 4; // maxim valoarea 9 la regina, regele are valoare 0
-                            // 6 piese se reprezinta pe 3 biti
-    char piece;
 
 } Piece;
 Piece Board[BOARD_SIZE][BOARD_SIZE];
+
+Piece capturedWhite[MAX_MOVES], capturedBlack[MAX_MOVES];
+int capturedWhiteCount = 0, capturedBlackCount = 0;
 
 typedef struct coordinates
 {
@@ -99,9 +108,9 @@ char *pieceFiles[2][6] = {
      "assets/king1.png"}};
 
 SDL_Texture *pieceTextures[2][6];
-
 int whosTurn = 0;
 int validateMove(int initCol, int initRow, int destCol, int destRow);
+void casual_mode(SDL_Renderer *renderer);
 int isPathClear(int initCol, int initRow, int destCol, int destRow)
 {
     int difCol = destCol - initCol;
@@ -213,9 +222,9 @@ int isInCheck(int color)
 int wouldMoveResultInCheck(Coord_t from, Coord_t to, int color)
 {
     // Make a temporary move to test if it results in check
-    Piece tempPiece = Board[to.x][to.y];               // Store the piece that might be captured
-    Board[to.x][to.y] = Board[from.x][from.y];         // Move the piece
-    Board[from.x][from.y] = (Piece){EMPTY, 0, 0, ' '}; // Clear the original square
+    Piece tempPiece = Board[to.x][to.y];          // Store the piece that might be captured
+    Board[to.x][to.y] = Board[from.x][from.y];    // Move the piece
+    Board[from.x][from.y] = (Piece){EMPTY, 0, 0}; // Clear the original square
 
     int inCheck = isInCheck(color); // Check if the king is in check after the move
 
@@ -273,6 +282,17 @@ int isStalemate(int color)
     return !isInCheck(color) && !hasLegalMoves(color);
 }
 
+int didWhiteCastle = 0, didBlackCastle = 0;
+
+void promotePawn(int initCol, int initRow)
+{
+    Board[initRow][initCol].tag = QUEEN;
+    Board[initRow][initCol].value = 9;
+}
+
+// Add these global variables for en passant tracking
+int enPassantCol = -1; // Column where en passant is possible (-1 if none)
+int enPassantRow = -1;
 int validateMove(int initCol, int initRow, int destCol, int destRow)
 {
     // printf("%c %d %d : %d %d %c\n\n", Board[initRow][initCol].piece, initRow, initCol, destRow, destCol, Board[destRow][destCol].piece);
@@ -311,6 +331,7 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
                     return 1;
                 }
             }
+
             // Diagonal capture
             if (difRow == 1 && abs(difCol) == 1 && Destination.tag != EMPTY && Destination.color != Initial.color)
             {
@@ -319,7 +340,6 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
         }
         else
         { // White Pawn
-            // Single move forward
             if (difRow == -1 && difCol == 0 && Destination.tag == EMPTY)
             {
                 return 1;
@@ -338,6 +358,10 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
             {
                 return 1;
             }
+            // if (initRow == 3 && abs(difRow) == 1 && abs(difCol) == 1 && Destination.tag != EMPTY)
+            // {
+            //     return 1;
+            // }
         }
         break;
     case ROOK:
@@ -396,13 +420,22 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
             int rookNewCol = (difCol == 2) ? 5 : 3; // Kingside rook goes to col 5, Queenside to col 3
 
             // Move rook from corner to new position
-            Board[startingRow][rookNewCol] = Board[startingRow][rookCol];
-            Board[startingRow][rookCol].tag = EMPTY;
-            Board[startingRow][rookCol].piece = ' ';
+            // Board[startingRow][rookNewCol] = Board[startingRow][rookCol];
+            // Board[startingRow][rookCol].tag = EMPTY;
+
+            if (Initial.color == 0)
+            {
+                didWhiteCastle = 1;
+            }
+            else if (Initial.color == 1)
+            {
+                didBlackCastle = 1;
+            }
             // If we reach here, castling is valid
             // Note: This doesn't check for check/checkmate conditions
             // You may want to add those checks separately
-            return 1;
+
+            return 2;
         }
         break;
 
@@ -421,7 +454,78 @@ int validateMove(int initCol, int initRow, int destCol, int destRow)
     return 0;
 }
 
-int makeMove(Coord_t moveFrom, Coord_t moveTo) //, FILE *fileText
+char pgnMoves[MAX_MOVES * 10]; // Stores all moves in PGN format
+int moveNumber = 1;            // Tracks the current move number
+void open_progress_window();
+char *transform_to_pgn(Coord_t moveFrom, Coord_t moveTo, Piece piece, int isCapture)
+{
+    static char pgnMove[16]; // Buffer to store the PGN move
+
+    // Handle castling
+    if (piece.tag == KING && abs(moveTo.y - moveFrom.y) == 2)
+    {
+        if (moveTo.y > moveFrom.y)
+        { // Kingside castling
+            snprintf(pgnMove, sizeof(pgnMove), "O-O");
+        }
+        else
+        { // Queenside castling
+            snprintf(pgnMove, sizeof(pgnMove), "O-O-O");
+        }
+        return pgnMove;
+    }
+
+    // Handle pawn moves
+    if (piece.tag == PAWN)
+    {
+        if (isCapture)
+        {
+            snprintf(pgnMove, sizeof(pgnMove), "%c%x%c%d", 'a' + moveFrom.y, 8 - moveFrom.x, 'a' + moveTo.y, 8 - moveTo.x);
+        }
+        else
+        {
+            snprintf(pgnMove, sizeof(pgnMove), "%c%d", 'a' + moveTo.y, 8 - moveTo.x);
+        }
+        return pgnMove;
+    }
+
+    // Handle other pieces
+    char pieceChar;
+    switch (piece.tag)
+    {
+    case KNIGHT:
+        pieceChar = 'N';
+        break;
+    case BISHOP:
+        pieceChar = 'B';
+        break;
+    case ROOK:
+        pieceChar = 'R';
+        break;
+    case QUEEN:
+        pieceChar = 'Q';
+        break;
+    case KING:
+        pieceChar = 'K';
+        break;
+    default:
+        pieceChar = '?';
+        break; // Unknown piece
+    }
+
+    if (isCapture)
+    {
+        snprintf(pgnMove, sizeof(pgnMove), "%c%c%dx%c%d", pieceChar, 'a' + moveFrom.y, 8 - moveFrom.x, 'a' + moveTo.y, 8 - moveTo.x);
+    }
+    else
+    {
+        snprintf(pgnMove, sizeof(pgnMove), "%c%c%d%c%d", pieceChar, 'a' + moveFrom.y, 8 - moveFrom.x, 'a' + moveTo.y, 8 - moveTo.x);
+    }
+
+    return pgnMove;
+}
+
+int makeAIMove(Coord_t moveFrom, Coord_t moveTo) //, FILE *fileText
 {
     // First validate the move according to piece rules
     if (!validateMove(moveFrom.y, moveFrom.x, moveTo.y, moveTo.x))
@@ -436,12 +540,134 @@ int makeMove(Coord_t moveFrom, Coord_t moveTo) //, FILE *fileText
         printf("Move is invalid - would leave king in check\n");
         return 0;
     }
+    // Piece piece = Board[moveFrom.x][moveFrom.y];
+    // int isCapture = (Board[moveTo.x][moveTo.y].tag != EMPTY);
+    // snprintf(moveHistory[moveCountP], sizeof(moveHistory[moveCountP]),
+    //          "%d. %c%d -> %c%d", moveCountP + 1,
+    //          'a' + moveFrom.y, 8 - moveFrom.x, // Convert coordinates to chess notation
+    //          'a' + moveTo.y, 8 - moveTo.x);
+    // moveCountP++;
+    // // Transform move to PGN style
+    // char *pgnMove = transform_to_pgn(moveFrom, moveTo, piece, isCapture);
+
+    // Append PGN move to pgnMoves
+    // if (whosTurn == 0)
+    // { // White's move
+    //     snprintf(pgnMoves + strlen(pgnMoves), sizeof(pgnMoves) - strlen(pgnMoves), "%d. %s ", moveNumber, pgnMove);
+    // }
+    // else
+    // { // Black's move
+    //     snprintf(pgnMoves + strlen(pgnMoves), sizeof(pgnMoves) - strlen(pgnMoves), "%s ", pgnMove);
+    //     moveNumber++; // Increment move number after Black's move
+    // }
+    // Make the move
+    Piece capturedPiece = Board[moveTo.x][moveTo.y]; // Store for potential undo
+    Board[moveTo.x][moveTo.y] = Board[moveFrom.x][moveFrom.y];
+    Board[moveFrom.x][moveFrom.y] = (Piece){EMPTY, 0, 0};
+
+    // Switch turns
+    whosTurn = !whosTurn;
+
+    // Check game state after the move
+    if (isCheckmate(whosTurn))
+    {
+        printf("Checkmate! Player %d wins!\n", !whosTurn);
+        // You might want to set a game over flag here
+    }
+    else if (isStalemate(whosTurn))
+    {
+        printf("Stalemate! The game is a draw!\n");
+        // You might want to set a game over flag here
+    }
+    else if (isInCheck(whosTurn))
+    {
+        printf("Check!\n");
+    }
+    return 1;
+}
+
+int makeMove(Coord_t moveFrom, Coord_t moveTo) //, FILE *fileText
+{
+    // First validate the move according to piece rules
+    int valid = validateMove(moveFrom.y, moveFrom.x, moveTo.y, moveTo.x);
+    if (!valid)
+    {
+        printf("Move is invalid according to piece rules\n");
+        return 0;
+    }
+    printf("the valid is: %d", valid);
+    // Check if this move would leave the current player's king in check
+    if (wouldMoveResultInCheck(moveFrom, moveTo, whosTurn))
+    {
+        printf("Move is invalid - would leave king in check\n");
+        return 0;
+    }
+    Piece piece = Board[moveFrom.x][moveFrom.y];
+    int isCapture = (Board[moveTo.x][moveTo.y].tag != EMPTY);
+    snprintf(moveHistory[moveCountP], sizeof(moveHistory[moveCountP]),
+             "%d. %c%d -> %c%d", moveCountP + 1,
+             'a' + moveFrom.y, 8 - moveFrom.x, // Convert coordinates to chess notation
+             'a' + moveTo.y, 8 - moveTo.x);
+    moveCountP++;
+    // Transform move to PGN style
+    char *pgnMove = transform_to_pgn(moveFrom, moveTo, piece, isCapture);
+
+    // Append PGN move to pgnMoves
+    if (whosTurn == 0)
+    { // White's move
+        snprintf(pgnMoves + strlen(pgnMoves), sizeof(pgnMoves) - strlen(pgnMoves), "%d. %s ", moveNumber, pgnMove);
+    }
+    else
+    { // Black's move
+        snprintf(pgnMoves + strlen(pgnMoves), sizeof(pgnMoves) - strlen(pgnMoves), "%s ", pgnMove);
+        moveNumber++; // Increment move number after Black's move
+    }
+
+    if (isCapture)
+    {
+        if (Board[moveTo.x][moveTo.y].color == 0)
+        {
+            capturedWhite[capturedWhiteCount++] = Board[moveTo.x][moveTo.y];
+        }
+        else
+        {
+            capturedBlack[capturedBlackCount++] = Board[moveTo.x][moveTo.y];
+        }
+    }
 
     // Make the move
     Piece capturedPiece = Board[moveTo.x][moveTo.y]; // Store for potential undo
     Board[moveTo.x][moveTo.y] = Board[moveFrom.x][moveFrom.y];
-    Board[moveFrom.x][moveFrom.y] = (Piece){EMPTY, 0, 0, ' '};
+    Board[moveFrom.x][moveFrom.y] = (Piece){EMPTY, 0, 0};
+    for (int i = 0; i < BOARD_SIZE; i++)
+    {
+        if (Board[0][i].tag == PAWN && Board[0][i].color == 0)
+            promotePawn(i, 0);
+        else if (Board[7][i].tag == PAWN && Board[7][i].color == 1)
+            promotePawn(i, 7);
+    }
+    if (valid == 2)
+    {
+        printf("%d", abs(moveFrom.y - moveTo.y));
+        if (moveFrom.y - moveTo.y < 0)
+        {
 
+            printf("ok");
+            Board[moveFrom.x][5] = Board[moveFrom.x][7];
+            Board[moveFrom.x][7].tag = EMPTY;
+        }
+        else
+        {
+            printf("oki");
+            Board[moveFrom.x][3] = Board[moveFrom.x][0];
+            Board[moveFrom.x][0].tag = EMPTY;
+        }
+    }
+
+    if (valid == 3)
+    {
+        promotePawn(moveTo.x, moveTo.y);
+    }
     // Switch turns
     whosTurn = !whosTurn;
 
@@ -716,26 +942,103 @@ void exit_game()
     // exit(0);
     setupBoard();
     whosTurn = 0;
+    moveCount = 0;
+    moveCountP = 0;
+    memset(moveHistory, 0, sizeof(moveHistory));
     // Set running to 0 to exit the main loop
 }
 
 void save_game()
 {
     printf("Save button clicked\n");
-    // TODO: Add save functionality here
+
+    FILE *file = fopen("save.pgn", "w");
+    if (!file)
+    {
+        printf("Failed to open file for saving\n");
+        return;
+    }
+
+    // Write metadata
+    fprintf(file, "[Event \"Casual Game\"]\n");
+    fprintf(file, "[Site \"Local\"]\n");
+    fprintf(file, "[Date \"2025.06.05\"]\n");
+    fprintf(file, "[Round \"-\"]\n");
+    fprintf(file, "[White \"Player1\"]\n");
+    fprintf(file, "[Black \"Player2\"]\n");
+    fprintf(file, "[Result \"*\"]\n\n");
+
+    // Write moves
+    fprintf(file, "%s\n", pgnMoves);
+
+    fclose(file);
+    printf("Game saved to game.pgn\n");
 }
 
-void reload_game()
+void reload_game(SDL_Renderer *renderer)
 {
     printf("Reload button clicked\n");
-    // TODO: Add reload logic here
+
+    FILE *file = fopen("save.pgn", "r");
+    if (!file)
+    {
+        printf("failed to open");
+    }
+
+    setupBoard();
+    whosTurn = moveCount % 2;
+    memset(moveHistory, 0, sizeof(moveHistory));
+    memset(pgnMoves, 0, sizeof(pgnMoves));
+    moveCountP = 0;
+    moveCount = 0;
+    moveNumber = 1;
+
+    char line[256];
+    while (fgets(line, sizeof(line), file))
+    {
+        if (line[0] == '[')
+            continue;
+
+        char *token = strtok(line, " \n");
+        while (token)
+        {
+            if (strchr(token, '.'))
+            {
+                token = strtok(NULL, " \n");
+                continue;
+            }
+
+            strncpy(moves[moveCount], token, sizeof(moves[moveCount]) - 1);
+            moves[moveCount][sizeof(moves[moveCount]) - 1] = '\0';
+            moveCount++;
+            token = strtok(NULL, " \n");
+        }
+    }
+    fclose(file);
+
+    for (int i = 0; i < moveCount; i++)
+    {
+        Coord_t from, to;
+        if (pgn_to_coords(moves[i], &from, &to))
+        {
+            makeMove(from, to);
+            printf("");
+        }
+        else
+        {
+            printf("Invalis move");
+        }
+    }
+    whosTurn = moveCount % 2;
+
+    casual_mode(renderer);
 }
 
 void tutorial_mode(SDL_Renderer *renderer)
 {
     printf("Tutorial mode started\n");
 
-    parse_pgn("tutorial.pgn"); // Load the PGN file
+    parse_pgn("save.pgn"); // Load the PGN file
     printf("Loaded %d moves from PGN file\n", moveCount);
     for (int i = 0; i < moveCount; i++)
     {
@@ -901,7 +1204,7 @@ int minimax(int depth, int alpha, int beta, int maximizingPlayer)
                     Coord_t from = {fromRow, fromCol};
                     Coord_t to = {toRow, toCol};
 
-                    makeMove(from, to);
+                    makeAIMove(from, to);
                     int score = minimax(depth - 1, alpha, beta, !maximizingPlayer);
                     copyBoard(Board, tempBoard); // Undo move
                     whosTurn = turnBefore;       // Restore turn
@@ -962,7 +1265,7 @@ int ai_make_move()
                     Coord_t from = {fromRow, fromCol};
                     Coord_t to = {toRow, toCol};
 
-                    makeMove(from, to);
+                    makeAIMove(from, to);
                     int score = minimax(3, -10000, 10000, 0);
                     copyBoard(Board, tempBoard);
                     whosTurn = turnBefore;
@@ -987,11 +1290,84 @@ int ai_make_move()
         makeMove(bestFrom, bestTo);
         lastAIMoveFrom = bestFrom;
         lastAIMoveTo = bestTo;
+        printf("score: %d", staticEvaluation());
         return 1;
     }
 
     printf("AI found no legal move.\n");
     return 0;
+}
+
+Coord_t selectedPiece = {-1, -1};
+
+void renderMoveHighlights(SDL_Renderer *renderer, Coord_t from)
+{
+    if (from.x == -1 || from.y == -1)
+        return; // No piece selected
+
+    // Enable alpha blending for transparency
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+
+    for (int i = 0; i < BOARD_SIZE; i++)
+    {
+        for (int j = 0; j < BOARD_SIZE; j++)
+        {
+            if (validateMove(from.y, from.x, j, i))
+            {
+                SDL_Rect square = {j * SQUARE_SIZE + 80, i * SQUARE_SIZE + 80, SQUARE_SIZE, SQUARE_SIZE};
+
+                // Set a semi-transparent green color for valid moves
+                SDL_SetRenderDrawColor(renderer, 0, 255, 0, 100); // Green with 100/255 opacity
+                SDL_RenderFillRect(renderer, &square);
+
+                // Optional: Add a border for better visibility
+                SDL_SetRenderDrawColor(renderer, 0, 200, 0, 200); // Darker green border
+                SDL_RenderDrawRect(renderer, &square);
+            }
+        }
+    }
+
+    // Highlight the selected piece with a different color
+    SDL_Rect selectedSquare = {from.y * SQUARE_SIZE + 80, from.x * SQUARE_SIZE + 80, SQUARE_SIZE, SQUARE_SIZE};
+    SDL_SetRenderDrawColor(renderer, 255, 255, 0, 120); // Yellow highlight for selected piece
+    SDL_RenderFillRect(renderer, &selectedSquare);
+
+    // Reset blend mode
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+}
+
+void renderCollectedPieces(SDL_Renderer *renderer)
+{
+    int xOffsetWhite = 200;
+    int xOffsetBlack = 200;
+    int yOffsetWhite = 520;
+    int yOffsetBlack = 550;
+    int pieceSpacing = 1;
+    for (int i = 0; i < capturedWhiteCount; i++)
+    {
+        SDL_Rect dest = {
+            xOffsetWhite + i * (SQUARE_SIZE / 2 + pieceSpacing),
+            yOffsetWhite,
+            SQUARE_SIZE / 2,
+            SQUARE_SIZE / 2};
+        SDL_RenderCopy(renderer, pieceTextures[0][capturedWhite[i].tag - 1], NULL, &dest);
+    }
+
+    for (int i = 0; i < capturedBlackCount; i++)
+    {
+        SDL_Rect dest = {
+            xOffsetBlack + i * (SQUARE_SIZE / 2 + pieceSpacing),
+            yOffsetBlack,
+            SQUARE_SIZE / 2,
+            SQUARE_SIZE / 2};
+        SDL_RenderCopy(renderer, pieceTextures[1][capturedBlack[i].tag - 1], NULL, &dest);
+    }
+}
+
+void generateLegalMoves(Coord_t from)
+{
+    // printf("%d %d\n", from.x, from.y);
+    selectedPiece = from;
 }
 
 void trainer_mode(SDL_Renderer *renderer)
@@ -1029,6 +1405,7 @@ void trainer_mode(SDL_Renderer *renderer)
                             if (selectedPiece.tag != EMPTY && selectedPiece.color == 0)
                             {                   // Human can only move White pieces
                                 From = clicked; // Store the selected piece's coordinates
+                                generateLegalMoves(clicked);
                                 printf("Selected piece at (%d, %d)\n", From.x, From.y);
                             }
                             else
@@ -1064,6 +1441,17 @@ void trainer_mode(SDL_Renderer *renderer)
                     {
                         runningGameMode = 0;
                     }
+                    if (mx >= 534 && mx <= 534 + 130 &&
+                        my >= 340 && my <= 340 + 50)
+                    {
+                        save_game();
+                    }
+
+                    if (mx >= 534 && mx <= 534 + 276 &&
+                        my >= 420 && my <= 420 + 50)
+                    {
+                        open_progress_window();
+                    }
                 }
             }
         }
@@ -1098,59 +1486,14 @@ void trainer_mode(SDL_Renderer *renderer)
         // Render pieces
         drawPieces(renderer);
 
+        renderMoveHighlights(renderer, selectedPiece);
+
         SDL_RenderPresent(renderer);
     }
     exit_game();
 }
 
-SDL_Renderer *globalRenderer;
-
-// Add this global variable to track the selected piece
-Coord_t selectedPiece = {-1, -1};
-
-// Modified generateLegalMoves function - now just stores the selected piece
-void generateLegalMoves(Coord_t from)
-{
-    // printf("%d %d\n", from.x, from.y);
-    selectedPiece = from; // Store the selected piece coordinates
-}
-
-// New function to render move highlights
-void renderMoveHighlights(SDL_Renderer *renderer, Coord_t from)
-{
-    if (from.x == -1 || from.y == -1)
-        return; // No piece selected
-
-    // Enable alpha blending for transparency
-    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-
-    for (int i = 0; i < BOARD_SIZE; i++)
-    {
-        for (int j = 0; j < BOARD_SIZE; j++)
-        {
-            if (validateMove(from.y, from.x, j, i))
-            {
-                SDL_Rect square = {j * SQUARE_SIZE + 80, i * SQUARE_SIZE + 80, SQUARE_SIZE, SQUARE_SIZE};
-
-                // Set a semi-transparent green color for valid moves
-                SDL_SetRenderDrawColor(renderer, 0, 255, 0, 100); // Green with 100/255 opacity
-                SDL_RenderFillRect(renderer, &square);
-
-                // Optional: Add a border for better visibility
-                SDL_SetRenderDrawColor(renderer, 0, 200, 0, 200); // Darker green border
-                SDL_RenderDrawRect(renderer, &square);
-            }
-        }
-    }
-
-    // Highlight the selected piece with a different color
-    SDL_Rect selectedSquare = {from.y * SQUARE_SIZE + 80, from.x * SQUARE_SIZE + 80, SQUARE_SIZE, SQUARE_SIZE};
-    SDL_SetRenderDrawColor(renderer, 255, 255, 0, 120); // Yellow highlight for selected piece
-    SDL_RenderFillRect(renderer, &selectedSquare);
-
-    // Reset blend mode
-    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-}
+SDL_Rect turnIndicatorRect = {110, 540, 50, 20};
 
 void casual_mode(SDL_Renderer *renderer)
 {
@@ -1227,6 +1570,17 @@ void casual_mode(SDL_Renderer *renderer)
                 {
                     runningGameMode = 0;
                 }
+                if (mx >= 534 && mx <= 534 + 130 &&
+                    my >= 340 && my <= 340 + 50)
+                {
+                    save_game();
+                }
+
+                if (mx >= 534 && mx <= 534 + 276 &&
+                    my >= 420 && my <= 420 + 50)
+                {
+                    open_progress_window();
+                }
             }
         }
 
@@ -1246,10 +1600,18 @@ void casual_mode(SDL_Renderer *renderer)
 
         // Render pieces
         drawPieces(renderer);
-
+        if (whosTurn == 0)
+        {
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+        }
+        else
+        {
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        }
+        SDL_RenderFillRect(renderer, &turnIndicatorRect);
         // Render move highlights on top of everything
         renderMoveHighlights(renderer, selectedPiece);
-
+        renderCollectedPieces(renderer);
         SDL_RenderPresent(renderer);
     }
     exit_game();
@@ -1257,7 +1619,7 @@ void casual_mode(SDL_Renderer *renderer)
 
 void open_progress_window()
 {
-    SDL_Window *progressWindow = SDL_CreateWindow("Progress", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 300, 300, SDL_WINDOW_SHOWN);
+    SDL_Window *progressWindow = SDL_CreateWindow("Progress", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 200, 300, SDL_WINDOW_SHOWN);
     if (!progressWindow)
     {
         SDL_Log("Failed to create progress window: %s", SDL_GetError());
@@ -1309,19 +1671,24 @@ void open_progress_window()
         }
 
         // Rendering
-        SDL_SetRenderDrawColor(progressRenderer, 200, 200, 255, 255);
+        SDL_SetRenderDrawColor(progressRenderer, Pink.r, Pink.g, Pink.b, Pink.a); // Light blue background
         SDL_RenderClear(progressRenderer);
 
-        // Add some text
-        SDL_Color textColor = {0, 0, 0, 255};
-        SDL_Surface *textSurface = TTF_RenderText_Blended(progressFont, "Game Progress", textColor);
-        if (textSurface)
+        // Render move history
+        SDL_Color textColor = {0, 0, 0, 255}; // Black text
+        int yOffset = 10;                     // Start rendering text 10 pixels from the top
+        for (int i = 0; i < moveCountP; i++)
         {
-            SDL_Texture *textTexture = SDL_CreateTextureFromSurface(progressRenderer, textSurface);
-            SDL_Rect textRect = {50, 50, textSurface->w, textSurface->h};
-            SDL_RenderCopy(progressRenderer, textTexture, NULL, &textRect);
-            SDL_FreeSurface(textSurface);
-            SDL_DestroyTexture(textTexture);
+            SDL_Surface *textSurface = TTF_RenderText_Blended(progressFont, moveHistory[i], textColor);
+            if (textSurface)
+            {
+                SDL_Texture *textTexture = SDL_CreateTextureFromSurface(progressRenderer, textSurface);
+                SDL_Rect textRect = {10, yOffset, textSurface->w, textSurface->h};
+                SDL_RenderCopy(progressRenderer, textTexture, NULL, &textRect);
+                SDL_FreeSurface(textSurface);
+                SDL_DestroyTexture(textTexture);
+                yOffset += textRect.h + 5; // Move down for the next line
+            }
         }
 
         SDL_RenderPresent(progressRenderer);
@@ -1388,7 +1755,6 @@ int main(int argc, char *argv[])
         -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
 
-    globalRenderer = renderer;
     if (!renderer)
     {
         SDL_Log("Failed to create renderer: %s", SDL_GetError());
@@ -1412,10 +1778,10 @@ int main(int argc, char *argv[])
         }
     }
 
-    SDL_Color White = {255, 255, 255, 255};   // white
-    SDL_Color Grey = {0, 0, 0, 100};          // shadow
-    SDL_Color Pink = {240, 209, 250, 255};    // bright pink, outilnes text from menu
-    SDL_Color DarkPink = {185, 50, 230, 255}; // dark pink, text from menu
+    // SDL_Color White = {255, 255, 255, 255};   // white
+    // SDL_Color Grey = {0, 0, 0, 100};          // shadow
+    // SDL_Color Pink = {240, 209, 250, 255};    // bright pink, outilnes text from menu
+    // SDL_Color DarkPink = {185, 50, 230, 255}; // dark pink, text from menu
 
     const char *multilineText = "8\n7\n6\n5\n4\n3\n2\n1";
 
@@ -1486,7 +1852,7 @@ int main(int argc, char *argv[])
                             save_game();
                             break;
                         case 5: // Load button
-                            reload_game();
+                            reload_game(renderer);
                             break;
                         case 6: // Progress button
                             open_progress_window();
